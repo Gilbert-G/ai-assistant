@@ -1,5 +1,7 @@
 // background.js - Service Worker for Manureva AI Assistant
-// Version 4.0.0 - Advanced Multi-Step Workflow Support
+// Version 4.1.0 - Refactored: shared utils in shared.js, deduplicated API logic.
+
+importScripts('shared.js');
 
 // ============================================================================
 // CONFIGURATION
@@ -204,7 +206,7 @@ async function handleMessage(message, sender) {
 // ============================================================================
 // CLAUDE API
 // ============================================================================
-async function callClaudeAPI(payload) {
+async function ensureApiKey() {
   if (!apiKey) {
     const stored = await chrome.storage.local.get('apiKey');
     if (stored.apiKey) {
@@ -213,9 +215,9 @@ async function callClaudeAPI(payload) {
       throw new Error('API key not set.');
     }
   }
+}
 
-  const { messages, systemPrompt } = payload;
-  
+async function fetchClaudeAPI(systemPrompt, messages) {
   const response = await fetch(CONFIG.CLAUDE_API_URL, {
     method: 'POST',
     headers: {
@@ -227,18 +229,18 @@ async function callClaudeAPI(payload) {
     body: JSON.stringify({
       model: CONFIG.MODEL,
       max_tokens: CONFIG.MAX_TOKENS,
-      system: systemPrompt || SYSTEM_PROMPT,
+      system: systemPrompt,
       messages: messages
     })
   });
-  
+
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(`API error: ${response.status} - ${errorData.error?.message || 'Unknown'}`);
   }
-  
+
   const data = await response.json();
-  
+
   return {
     success: true,
     content: data.content.filter(b => b.type === 'text').map(b => b.text).join('\n'),
@@ -247,18 +249,16 @@ async function callClaudeAPI(payload) {
   };
 }
 
-async function callClaudeAPIWithContext(payload) {
-  if (!apiKey) {
-    const stored = await chrome.storage.local.get('apiKey');
-    if (stored.apiKey) {
-      apiKey = stored.apiKey;
-    } else {
-      throw new Error('API key not set.');
-    }
-  }
+async function callClaudeAPI(payload) {
+  await ensureApiKey();
+  const { messages, systemPrompt } = payload;
+  return await fetchClaudeAPI(systemPrompt || SYSTEM_PROMPT, messages);
+}
 
+async function callClaudeAPIWithContext(payload) {
+  await ensureApiKey();
   const { messages, pageContext } = payload;
-  
+
   // Build contextual system prompt
   let contextualPrompt = SYSTEM_PROMPT;
   
@@ -335,36 +335,8 @@ async function callClaudeAPIWithContext(payload) {
     todoItems: missionState.todoList.length,
     hasJiraContext: !!pageContext?.storedJiraContext
   });
-  
-  const response = await fetch(CONFIG.CLAUDE_API_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true'
-    },
-    body: JSON.stringify({
-      model: CONFIG.MODEL,
-      max_tokens: CONFIG.MAX_TOKENS,
-      system: contextualPrompt,
-      messages: messages
-    })
-  });
-  
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(`API error: ${response.status} - ${errorData.error?.message || 'Unknown'}`);
-  }
-  
-  const data = await response.json();
-  
-  return {
-    success: true,
-    content: data.content.filter(b => b.type === 'text').map(b => b.text).join('\n'),
-    usage: data.usage,
-    stopReason: data.stop_reason
-  };
+
+  return await fetchClaudeAPI(contextualPrompt, messages);
 }
 
 // ============================================================================
@@ -387,7 +359,7 @@ async function injectContentScript(tabId) {
     } catch (e) {}
     
     await chrome.scripting.insertCSS({ target: { tabId }, files: ['content.css'] });
-    await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['shared.js', 'content.js'] });
     await new Promise(resolve => setTimeout(resolve, 500));
     
     return { success: true };
@@ -410,16 +382,6 @@ async function getTabInfo(tabId) {
   } catch (error) {
     return { error: error.message };
   }
-}
-
-function detectPlatform(url) {
-  if (!url) return 'unknown';
-  if (/atlassian\.net|jira\./i.test(url)) return 'jira';
-  if (/\/wp-admin|\/wp-login/i.test(url)) return 'wordpress-admin';
-  if (/wordpress|developer\.wordpress/i.test(url)) return 'wordpress';
-  if (/github\.com/i.test(url)) return 'github';
-  if (/elegantthemes|divi/i.test(url)) return 'divi';
-  return 'website';
 }
 
 async function navigateTab(tabId, url) {
