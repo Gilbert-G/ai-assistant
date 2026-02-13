@@ -4,43 +4,67 @@
 console.log('[Manureva Content] Script loaded');
 
 // ============================================================================
+// DOMAIN SAFETY CHECK (defense-in-depth)
+// ============================================================================
+const SENSITIVE_DOMAIN_PATTERNS = [
+  /bank|banking|chase|wellsfargo|bofa|citi|hsbc|barclays/i,
+  /paypal|venmo|stripe\.com|square\.com/i,
+  /signin\.aws|console\.aws/i,
+  /accounts\.google|myaccount\.google/i,
+  /login\.microsoft|portal\.azure/i
+];
+
+function isOnSensitiveDomain() {
+  const url = window.location.href;
+  return SENSITIVE_DOMAIN_PATTERNS.some(pattern => pattern.test(url));
+}
+
+// ============================================================================
 // MESSAGE HANDLER
 // ============================================================================
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   console.log('[Content] Received:', message.type || message);
-  
+
   try {
+    // Block mutating actions on sensitive domains
+    const mutatingActions = ['CLICK', 'TYPE', 'PRESS_KEY'];
+    if (mutatingActions.includes(message.type) && isOnSensitiveDomain()) {
+      console.warn('[Content] Blocked action on sensitive domain:', window.location.href);
+      sendResponse({ success: false, error: 'Action blocked: this domain is restricted for automated interactions.' });
+      return true;
+    }
+
     switch (message.type) {
       case 'PING':
         sendResponse({ ready: true });
         break;
-      
+
       case 'GET_PAGE_CONTENT':
         const content = extractPageContent();
         sendResponse(content);
         break;
-      
+
       case 'CLICK':
         handleClick(message, sendResponse);
         break;
-      
+
       case 'SCROLL':
         handleScroll(message, sendResponse);
         break;
-      
+
       case 'TYPE':
         handleType(message, sendResponse);
         break;
-      
+
       case 'PRESS_KEY':
         handlePressKey(message, sendResponse);
         break;
-      
+
       case 'OBSERVE':
         const observation = extractPageContent();
         sendResponse({ success: true, data: observation });
         break;
-      
+
       default:
         sendResponse({ success: false, error: 'Unknown action' });
     }
@@ -48,7 +72,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     console.error('[Content] Error:', error);
     sendResponse({ success: false, error: error.message });
   }
-  
+
   return true; // Keep channel open for async
 });
 
