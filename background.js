@@ -206,14 +206,14 @@ async function handleMessage(message, sender) {
 // ============================================================================
 async function callClaudeAPI(payload) {
   if (!apiKey) {
-    const stored = await chrome.storage.sync.get('apiKey');
+    const stored = await chrome.storage.local.get('apiKey');
     if (stored.apiKey) {
       apiKey = stored.apiKey;
     } else {
       throw new Error('API key not set.');
     }
   }
-  
+
   const { messages, systemPrompt } = payload;
   
   const response = await fetch(CONFIG.CLAUDE_API_URL, {
@@ -249,14 +249,14 @@ async function callClaudeAPI(payload) {
 
 async function callClaudeAPIWithContext(payload) {
   if (!apiKey) {
-    const stored = await chrome.storage.sync.get('apiKey');
+    const stored = await chrome.storage.local.get('apiKey');
     if (stored.apiKey) {
       apiKey = stored.apiKey;
     } else {
       throw new Error('API key not set.');
     }
   }
-  
+
   const { messages, pageContext } = payload;
   
   // Build contextual system prompt
@@ -372,7 +372,7 @@ async function callClaudeAPIWithContext(payload) {
 // ============================================================================
 function setApiKey(key) {
   apiKey = key;
-  chrome.storage.sync.set({ apiKey: key });
+  chrome.storage.local.set({ apiKey: key });
   return { success: true };
 }
 
@@ -578,9 +578,40 @@ async function switchToTab(tabId, platform) {
   }
 }
 
+// Patterns for domains where automated DOM actions (click, type, pressKey) should be blocked
+const SENSITIVE_DOMAIN_PATTERNS = [
+  /bank|banking|chase|wellsfargo|bofa|citi|hsbc|barclays/i,
+  /paypal|venmo|stripe\.com|square\.com/i,
+  /signin\.aws|console\.aws/i,
+  /accounts\.google|myaccount\.google/i,
+  /login\.microsoft|portal\.azure/i,
+  /chrome:\/\/|chrome-extension:\/\/|about:/i
+];
+
+function isSensitiveDomain(url) {
+  if (!url) return false;
+  return SENSITIVE_DOMAIN_PATTERNS.some(pattern => pattern.test(url));
+}
+
 async function executeInTab(tabId, action) {
+  // Block mutating DOM actions on sensitive domains
+  const mutatingActions = ['CLICK', 'TYPE', 'PRESS_KEY'];
+  if (mutatingActions.includes(action.type)) {
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      if (isSensitiveDomain(tab.url)) {
+        console.warn('[Background] Blocked action on sensitive domain:', tab.url);
+        logCompletedAction(`${action.type}`, 'blocked: sensitive domain');
+        return { success: false, error: 'Action blocked: this domain is restricted for automated interactions.' };
+      }
+    } catch (e) {
+      // If we can't verify the tab, block the action as a precaution
+      return { success: false, error: 'Unable to verify tab safety.' };
+    }
+  }
+
   await injectContentScript(tabId);
-  
+
   try {
     const result = await chrome.tabs.sendMessage(tabId, action);
     logCompletedAction(`${action.type}: ${action.description || action.text || action.selector || ''}`, result?.success ? 'success' : 'failed');

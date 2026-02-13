@@ -1240,69 +1240,120 @@ function addAssistantMessage(content) {
 }
 
 function formatAssistantContent(content) {
-  let formatted = escapeHtml(content);
-  
-  // Format action tags with nice styling
-  const actionTypes = ['navigate', 'click', 'scroll', 'type', 'pressKey', 'wait', 
-                       'read', 'verify', 'observe', 'storeContext', 'switchTab', 
-                       'analyze', 'continue', 'todo'];
-  
-  const actionPattern = new RegExp(
-    `&lt;(${actionTypes.join('|')})(\\s+[^&]*?)?(?:\\/&gt;|&gt;([^&]*?)&lt;\\/\\1&gt;)`,
-    'gi'
+  // Build content safely using DOM APIs instead of innerHTML with regex
+  const container = document.createElement('div');
+
+  const ACTION_ICONS = {
+    navigate: '🚀', click: '🖱️', scroll: '📜', type: '⌨️', pressKey: '⌨️',
+    wait: '⏳', read: '👁️', verify: '✓', observe: '👁️', storeContext: '💾',
+    switchTab: '🔄', analyze: '🔍', continue: '▶️', todo: '📝'
+  };
+  const actionTypes = Object.keys(ACTION_ICONS);
+
+  // Strip action tags from content and collect them for rendering
+  const actionTagRegex = new RegExp(
+    `<(${actionTypes.join('|')})\\s*([^>]*?)(?:\\/>|>([^<]*)<\\/\\1>)`, 'gi'
   );
-  
-  formatted = formatted.replace(actionPattern, (match, actionType, attrs, inner) => {
-    // Extract key info for display
+  const actionBlocks = [];
+  const strippedContent = content.replace(actionTagRegex, (match, actionType, attrString) => {
+    const attrs = parseAttributes(attrString || '');
     let summary = actionType;
-    const decodedAttrs = (attrs || '').replace(/&quot;/g, '"');
-    
-    const urlMatch = decodedAttrs.match(/url="([^"]+)"/);
-    const textMatch = decodedAttrs.match(/text="([^"]+)"/);
-    const dirMatch = decodedAttrs.match(/direction="([^"]+)"/);
-    const keyMatch = decodedAttrs.match(/key="([^"]+)"/);
-    const purposeMatch = decodedAttrs.match(/purpose="([^"]+)"/);
-    
-    if (urlMatch) summary = `navigate → ${urlMatch[1].substring(0, 35)}...`;
-    else if (textMatch) summary = `${actionType} → "${textMatch[1]}"`;
-    else if (dirMatch) summary = `scroll ${dirMatch[1]}`;
-    else if (keyMatch) summary = `pressKey: ${keyMatch[1]}`;
-    else if (purposeMatch) summary = `${actionType}: ${purposeMatch[1].substring(0, 30)}`;
-    
-    // Get icon based on action type
-    const icons = {
-      navigate: '🚀',
-      click: '🖱️',
-      scroll: '📜',
-      type: '⌨️',
-      pressKey: '⌨️',
-      wait: '⏳',
-      read: '👁️',
-      verify: '✓',
-      observe: '👁️',
-      storeContext: '💾',
-      switchTab: '🔄',
-      analyze: '🔍',
-      continue: '▶️',
-      todo: '📝'
-    };
-    
-    return `<div class="action-block">
-      <div class="action-header">${icons[actionType] || '▶️'} ${summary}</div>
-    </div>`;
+    if (attrs.url) summary = `navigate → ${attrs.url.substring(0, 35)}...`;
+    else if (attrs.text) summary = `${actionType} → "${attrs.text}"`;
+    else if (attrs.direction) summary = `scroll ${attrs.direction}`;
+    else if (attrs.key) summary = `pressKey: ${attrs.key}`;
+    else if (attrs.purpose) summary = `${actionType}: ${attrs.purpose.substring(0, 30)}`;
+
+    actionBlocks.push({ type: actionType.toLowerCase(), summary });
+    return `\n%%ACTION_BLOCK_${actionBlocks.length - 1}%%\n`;
   });
-  
-  // Format code blocks
-  formatted = formatted.replace(/```(\w+)?\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
-  formatted = formatted.replace(/`([^`]+)`/g, '<code>$1</code>');
-  
-  // Bold text
-  formatted = formatted.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  
-  // Line breaks
-  formatted = formatted.replace(/\n/g, '<br>');
-  
-  return formatted;
+
+  // Process content line-by-line / block-by-block using DOM methods
+  const lines = strippedContent.split('\n');
+  let inCodeBlock = false;
+  let codeLines = [];
+
+  for (const line of lines) {
+    // Check for action block placeholder
+    const actionMatch = line.trim().match(/^%%ACTION_BLOCK_(\d+)%%$/);
+    if (actionMatch) {
+      const idx = parseInt(actionMatch[1]);
+      const block = actionBlocks[idx];
+      if (block) {
+        const actionDiv = document.createElement('div');
+        actionDiv.className = 'action-block';
+        const headerDiv = document.createElement('div');
+        headerDiv.className = 'action-header';
+        headerDiv.textContent = `${ACTION_ICONS[block.type] || '▶️'} ${block.summary}`;
+        actionDiv.appendChild(headerDiv);
+        container.appendChild(actionDiv);
+      }
+      continue;
+    }
+
+    // Code block start/end
+    if (line.trim().startsWith('```')) {
+      if (inCodeBlock) {
+        // End code block
+        const pre = document.createElement('pre');
+        const code = document.createElement('code');
+        code.textContent = codeLines.join('\n');
+        pre.appendChild(code);
+        container.appendChild(pre);
+        codeLines = [];
+        inCodeBlock = false;
+      } else {
+        inCodeBlock = true;
+        codeLines = [];
+      }
+      continue;
+    }
+
+    if (inCodeBlock) {
+      codeLines.push(line);
+      continue;
+    }
+
+    // Regular line - process inline formatting safely
+    if (line.trim() === '') {
+      container.appendChild(document.createElement('br'));
+      continue;
+    }
+
+    const lineSpan = document.createElement('span');
+    appendFormattedInline(lineSpan, line);
+    container.appendChild(lineSpan);
+    container.appendChild(document.createElement('br'));
+  }
+
+  // Close unclosed code block
+  if (inCodeBlock && codeLines.length > 0) {
+    const pre = document.createElement('pre');
+    const code = document.createElement('code');
+    code.textContent = codeLines.join('\n');
+    pre.appendChild(code);
+    container.appendChild(pre);
+  }
+
+  return container.innerHTML;
+}
+
+function appendFormattedInline(parent, text) {
+  // Process inline formatting (bold, inline code) safely via DOM
+  const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
+  for (const part of parts) {
+    if (part.startsWith('**') && part.endsWith('**')) {
+      const strong = document.createElement('strong');
+      strong.textContent = part.slice(2, -2);
+      parent.appendChild(strong);
+    } else if (part.startsWith('`') && part.endsWith('`')) {
+      const code = document.createElement('code');
+      code.textContent = part.slice(1, -1);
+      parent.appendChild(code);
+    } else {
+      parent.appendChild(document.createTextNode(part));
+    }
+  }
 }
 
 function scrollToMessageTop(messageElement) {
