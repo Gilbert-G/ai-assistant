@@ -113,12 +113,7 @@ function extractPageContent() {
   return result;
 }
 
-function detectPlatform(url) {
-  if (/atlassian\.net|jira\./i.test(url)) return 'jira';
-  if (/\/wp-admin|\/wp-login/i.test(url)) return 'wordpress-admin';
-  if (/github\.com/i.test(url)) return 'github';
-  return 'website';
-}
+// detectPlatform is provided by shared.js (injected before this file)
 
 // ============================================================================
 // JIRA EXTRACTION
