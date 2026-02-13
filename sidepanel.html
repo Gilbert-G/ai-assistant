@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Manureva AI Assistant</title>
+  <style>
+    :root {
+      --primary: #6366f1;
+      --primary-dark: #4f46e5;
+      --secondary: #06b6d4;
+      --background: #0f172a;
+      --surface: #1e293b;
+      --surface-light: #334155;
+      --text: #f1f5f9;
+      --text-muted: #94a3b8;
+      --success: #22c55e;
+      --error: #ef4444;
+      --warning: #f59e0b;
+    }
+    
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--background);
+      color: var(--text);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    
+    /* Header */
+    .header {
+      background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
+      padding: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    
+    .header-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    
+    .header-title svg {
+      width: 28px;
+      height: 28px;
+    }
+    
+    .header-title h1 {
+      font-size: 16px;
+      font-weight: 600;
+    }
+    
+    .header-actions {
+      display: flex;
+      gap: 8px;
+    }
+    
+    .icon-btn {
+      background: rgba(255, 255, 255, 0.2);
+      border: none;
+      border-radius: 8px;
+      padding: 8px;
+      cursor: pointer;
+      color: white;
+      transition: background 0.2s;
+    }
+    
+    .icon-btn:hover {
+      background: rgba(255, 255, 255, 0.3);
+    }
+    
+    .icon-btn svg {
+      width: 18px;
+      height: 18px;
+    }
+    
+    /* Mission Banner */
+    .mission-banner {
+      background: var(--surface);
+      border-bottom: 1px solid var(--surface-light);
+      padding: 12px 16px;
+    }
+    
+    .mission-banner.hidden {
+      display: none;
+    }
+    
+    .mission-label {
+      font-size: 11px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 4px;
+    }
+    
+    .mission-goal {
+      font-size: 13px;
+      color: var(--text);
+      margin-bottom: 8px;
+    }
+    
+    .progress-bar {
+      height: 4px;
+      background: var(--surface-light);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--primary), var(--secondary));
+      width: 0%;
+      transition: width 0.3s ease;
+    }
+    
+    .mission-progress {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+    
+    /* Chat Container */
+    #chat-container {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    
+    .welcome-message {
+      text-align: center;
+      padding: 32px 16px;
+    }
+    
+    .welcome-icon {
+      width: 64px;
+      height: 64px;
+      margin: 0 auto 16px;
+      background: linear-gradient(135deg, var(--primary), var(--secondary));
+      border-radius: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    
+    .welcome-icon svg {
+      width: 32px;
+      height: 32px;
+      color: white;
+    }
+    
+    .welcome-message h2 {
+      font-size: 18px;
+      margin-bottom: 12px;
+    }
+    
+    .welcome-message p {
+      color: var(--text-muted);
+      font-size: 14px;
+      margin-bottom: 8px;
+    }
+    
+    .welcome-message ul {
+      text-align: left;
+      color: var(--text-muted);
+      font-size: 13px;
+      margin: 16px 0;
+      padding-left: 24px;
+    }
+    
+    .welcome-message li {
+      margin-bottom: 6px;
+    }
+    
+    .welcome-message .hint {
+      font-style: italic;
+      color: var(--secondary);
+    }
+    
+    /* Messages */
+    .message {
+      display: flex;
+      gap: 12px;
+    }
+    
+    .message-avatar {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      background: var(--surface-light);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    
+    .message-avatar svg {
+      width: 16px;
+      height: 16px;
+      color: var(--text-muted);
+    }
+    
+    .message.user .message-avatar {
+      background: var(--primary);
+    }
+    
+    .message.user .message-avatar svg {
+      color: white;
+    }
+    
+    .message.assistant .message-avatar {
+      background: linear-gradient(135deg, var(--primary), var(--secondary));
+    }
+    
+    .message.assistant .message-avatar svg {
+      color: white;
+    }
+    
+    .message-content {
+      flex: 1;
+      min-width: 0;
+    }
+    
+    .message-bubble {
+      background: var(--surface);
+      border-radius: 12px;
+      padding: 12px 16px;
+      font-size: 14px;
+      line-height: 1.5;
+      border: 1px solid var(--surface-light);
+    }
+    
+    .message.user .message-bubble {
+      background: var(--primary);
+      border-color: var(--primary-dark);
+    }
+    
+    /* System Notice */
+    .system-notice {
+      justify-content: center;
+    }
+    
+    .system-notice .message-content {
+      flex: none;
+    }
+    
+    .system-notice-bubble {
+      background: rgba(99, 102, 241, 0.1);
+      border: 1px solid rgba(99, 102, 241, 0.3);
+      border-radius: 20px;
+      padding: 6px 14px;
+      font-size: 12px;
+      color: var(--secondary);
+      display: flex;
+      align-items: center;
+    }
+    
+    /* Action Block */
+    .action-block {
+      background: rgba(6, 182, 212, 0.1);
+      border: 1px solid rgba(6, 182, 212, 0.3);
+      border-radius: 8px;
+      margin: 8px 0;
+      overflow: hidden;
+    }
+    
+    .action-header {
+      padding: 8px 12px;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--secondary);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    
+    .action-content {
+      padding: 8px 12px;
+      font-size: 11px;
+      color: var(--text-muted);
+      font-family: monospace;
+      word-break: break-all;
+    }
+    
+    /* Loading */
+    .loading-indicator {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 8px 0;
+    }
+    
+    .loading-dots {
+      display: flex;
+      gap: 4px;
+    }
+    
+    .loading-dots span {
+      width: 8px;
+      height: 8px;
+      background: var(--primary);
+      border-radius: 50%;
+      animation: bounce 1.4s infinite ease-in-out both;
+    }
+    
+    .loading-dots span:nth-child(1) { animation-delay: -0.32s; }
+    .loading-dots span:nth-child(2) { animation-delay: -0.16s; }
+    
+    @keyframes bounce {
+      0%, 80%, 100% { transform: scale(0); }
+      40% { transform: scale(1); }
+    }
+    
+    /* Code */
+    code {
+      background: var(--surface-light);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-family: 'SF Mono', Monaco, monospace;
+      font-size: 13px;
+    }
+    
+    pre {
+      background: var(--surface-light);
+      padding: 12px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    
+    pre code {
+      background: none;
+      padding: 0;
+    }
+    
+    /* Input Area */
+    .input-area {
+      padding: 16px;
+      background: var(--surface);
+      border-top: 1px solid var(--surface-light);
+    }
+    
+    .input-container {
+      display: flex;
+      gap: 12px;
+      align-items: flex-end;
+    }
+    
+    #user-input {
+      flex: 1;
+      background: var(--background);
+      border: 1px solid var(--surface-light);
+      border-radius: 12px;
+      padding: 12px 16px;
+      color: var(--text);
+      font-size: 14px;
+      resize: none;
+      min-height: 44px;
+      max-height: 200px;
+      font-family: inherit;
+    }
+    
+    #user-input:focus {
+      outline: none;
+      border-color: var(--primary);
+    }
+    
+    #user-input::placeholder {
+      color: var(--text-muted);
+    }
+    
+    #send-btn {
+      background: linear-gradient(135deg, var(--primary), var(--secondary));
+      border: none;
+      border-radius: 12px;
+      padding: 12px;
+      cursor: pointer;
+      transition: transform 0.2s, opacity 0.2s;
+    }
+    
+    #send-btn:hover {
+      transform: scale(1.05);
+    }
+    
+    #send-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+    }
+    
+    #send-btn svg {
+      width: 20px;
+      height: 20px;
+      color: white;
+    }
+    
+    /* Settings Panel */
+    .settings-panel {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: var(--background);
+      z-index: 100;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+    }
+    
+    .settings-panel.hidden {
+      display: none;
+    }
+    
+    .settings-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 24px;
+    }
+    
+    .settings-header h2 {
+      font-size: 18px;
+    }
+    
+    .settings-content {
+      flex: 1;
+    }
+    
+    .form-group {
+      margin-bottom: 20px;
+    }
+    
+    .form-group label {
+      display: block;
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+    
+    .form-group input {
+      width: 100%;
+      background: var(--surface);
+      border: 1px solid var(--surface-light);
+      border-radius: 8px;
+      padding: 12px;
+      color: var(--text);
+      font-size: 14px;
+    }
+    
+    .form-group input:focus {
+      outline: none;
+      border-color: var(--primary);
+    }
+    
+    .status-text {
+      font-size: 12px;
+      margin-top: 8px;
+    }
+    
+    .status-text.error { color: var(--error); }
+    .status-text.success { color: var(--success); }
+    
+    .btn {
+      background: linear-gradient(135deg, var(--primary), var(--secondary));
+      border: none;
+      border-radius: 8px;
+      padding: 12px 24px;
+      color: white;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: transform 0.2s;
+    }
+    
+    .btn:hover {
+      transform: scale(1.02);
+    }
+  </style>
+</head>
+<body>
+  <!-- Header -->
+  <div class="header">
+    <div class="header-title">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+      </svg>
+      <h1>Manureva AI</h1>
+    </div>
+    <div class="header-actions">
+      <button id="reset-btn" class="icon-btn" title="Reset Mission">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+          <path d="M3 3v5h5"/>
+        </svg>
+      </button>
+      <button id="settings-btn" class="icon-btn" title="Settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+  
+  <!-- Mission Banner -->
+  <div id="mission-banner" class="mission-banner hidden">
+    <div class="mission-label">Current Mission</div>
+    <div id="mission-goal" class="mission-goal"></div>
+    <div class="progress-bar">
+      <div id="progress-fill" class="progress-fill"></div>
+    </div>
+    <div id="mission-progress" class="mission-progress"></div>
+  </div>
+  
+  <!-- Chat Container -->
+  <div id="chat-container">
+    <div class="welcome-message">
+      <div class="welcome-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+        </svg>
+      </div>
+      <h2>Welcome to Manureva AI Assistant</h2>
+      <p>I'm your intelligent browser automation assistant. I can help you:</p>
+      <ul>
+        <li>Navigate to Jira tickets and analyze issues</li>
+        <li>Deep-dive into WordPress/Divi admin panels</li>
+        <li>Execute multi-step workflows across platforms</li>
+        <li>Provide accurate time estimates</li>
+      </ul>
+      <p class="hint">Tell me what you'd like to accomplish!</p>
+    </div>
+  </div>
+  
+  <!-- Input Area -->
+  <div class="input-area">
+    <div class="input-container">
+      <textarea id="user-input" placeholder="Type your message..." rows="1"></textarea>
+      <button id="send-btn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+  
+  <!-- Settings Panel -->
+  <div id="settings-panel" class="settings-panel hidden">
+    <div class="settings-header">
+      <h2>Settings</h2>
+      <button id="close-settings" class="icon-btn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M18 6L6 18M6 6l12 12"/>
+        </svg>
+      </button>
+    </div>
+    <div class="settings-content">
+      <div class="form-group">
+        <label for="api-key-input">Claude API Key</label>
+        <input type="password" id="api-key-input" placeholder="sk-ant-...">
+        <div id="api-key-status" class="status-text"></div>
+      </div>
+      <button id="save-api-key" class="btn">Save API Key</button>
+    </div>
+  </div>
+  
+  <script src="sidepanel.js"></script>
+</body>
+</html>
