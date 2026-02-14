@@ -362,6 +362,7 @@ async function executeDomAction(action) {
           tabId: state.currentTabId,
           action: {
             type: 'CLICK',
+            index: action.index,
             selector: action.selector,
             text: action.text,
             description: action.description
@@ -381,6 +382,7 @@ async function executeDomAction(action) {
             tabId: state.currentTabId,
             action: {
               type: 'CLICK',
+              index: action.index,
               selector: action.selector,
               text: action.text,
               description: action.description
@@ -448,6 +450,7 @@ async function executeDomAction(action) {
           tabId: state.currentTabId,
           action: {
             type: 'TYPE',
+            index: action.index,
             selector: action.selector,
             text: action.text
           }
@@ -593,7 +596,7 @@ async function buildContinuationMessage() {
   }
 
   if (pageContent?.keyElements?.length > 0) {
-    msg += `**Interactive Elements:**\n${pageContent.keyElements.slice(0, 15).join('\n')}\n\n`;
+    msg += `**Element Map:**\n${pageContent.keyElements.join('\n')}\n\n`;
   }
 
   // Mission-specific closing instruction

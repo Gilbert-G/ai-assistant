@@ -6,6 +6,10 @@ if (window.__manurevaContentScriptLoaded) {
   console.log('[Manureva Content] Already loaded, skipping re-injection');
 } else {
 window.__manurevaContentScriptLoaded = true;
+
+// Global element registry for index-based interaction
+window.__manurevaElements = [];
+
 console.log('[Manureva Content] Script loaded');
 
 // ============================================================================
@@ -111,7 +115,7 @@ function extractPageContent() {
   }
   
   // Common extractions
-  result.keyElements = extractKeyElements();
+  result.keyElements = buildElementMap();
   result.relatedLinks = extractLinks();
   result.navigationOptions = extractNavigation();
   
@@ -263,118 +267,173 @@ function extractGenericContent() {
 }
 
 // ============================================================================
+// UNIVERSAL ELEMENT MAP — Indexed Accessibility Tree
+// ============================================================================
+const INTERACTIVE_SELECTOR = [
+  'a[href]',
+  'button', '[role="button"]',
+  'input:not([type="hidden"])', 'textarea', 'select',
+  '[role="link"]', '[role="menuitem"]', '[role="menuitemcheckbox"]', '[role="menuitemradio"]',
+  '[role="option"]', '[role="tab"]', '[role="treeitem"]',
+  '[role="switch"]', '[role="checkbox"]', '[role="radio"]',
+  '[role="combobox"]', '[role="searchbox"]', '[role="textbox"]', '[role="listbox"]',
+  '[role="slider"]', '[role="spinbutton"]', '[role="gridcell"]',
+  '[contenteditable="true"]', '[contenteditable=""]',
+  'summary',
+  'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+  'img[alt]', '[role="img"][aria-label]'
+].join(', ');
+
+function inferRole(el) {
+  const tag = el.tagName.toLowerCase();
+  const explicit = el.getAttribute('role');
+  if (explicit) return explicit;
+
+  switch (tag) {
+    case 'a': return el.hasAttribute('href') ? 'link' : null;
+    case 'button': case 'summary': return 'button';
+    case 'input': {
+      const t = (el.getAttribute('type') || 'text').toLowerCase();
+      if (t === 'submit' || t === 'button' || t === 'reset' || t === 'image') return 'button';
+      if (t === 'checkbox') return 'checkbox';
+      if (t === 'radio') return 'radio';
+      if (t === 'range') return 'slider';
+      if (t === 'number') return 'spinbutton';
+      if (t === 'search') return 'searchbox';
+      return 'textbox';
+    }
+    case 'textarea': return 'textbox';
+    case 'select': return 'combobox';
+    case 'img': return 'img';
+    case 'h1': case 'h2': case 'h3': case 'h4': case 'h5': case 'h6': return 'heading';
+    default:
+      if (el.hasAttribute('contenteditable') && el.getAttribute('contenteditable') !== 'false') return 'textbox';
+      return null;
+  }
+}
+
+function getAccessibleName(el) {
+  // 1. aria-label
+  const ariaLabel = el.getAttribute('aria-label');
+  if (ariaLabel) return ariaLabel.trim().substring(0, 80);
+
+  // 2. aria-labelledby
+  const labelledBy = el.getAttribute('aria-labelledby');
+  if (labelledBy) {
+    const parts = labelledBy.split(/\s+/)
+      .map(id => document.getElementById(id)?.textContent?.trim())
+      .filter(Boolean);
+    if (parts.length) return parts.join(' ').substring(0, 80);
+  }
+
+  const tag = el.tagName;
+
+  // 3. Form controls: associated <label>, placeholder, title, name
+  if (['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) {
+    if (el.id) {
+      const lbl = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+      if (lbl) return lbl.textContent.trim().substring(0, 80);
+    }
+    const parentLabel = el.closest('label');
+    if (parentLabel) {
+      const clone = parentLabel.cloneNode(true);
+      clone.querySelectorAll('input, textarea, select').forEach(c => c.remove());
+      const labelText = clone.textContent.trim();
+      if (labelText) return labelText.substring(0, 80);
+    }
+    if (el.placeholder) return el.placeholder.substring(0, 80);
+    if (el.title) return el.title.substring(0, 80);
+    if (el.name) return el.name.substring(0, 80);
+    return '';
+  }
+
+  // 4. Images: alt text
+  if (tag === 'IMG') {
+    return (el.getAttribute('alt') || '').trim().substring(0, 80);
+  }
+
+  // 5. Text content (buttons, links, headings, options, etc.)
+  const text = el.textContent?.trim().replace(/\s+/g, ' ');
+  if (text && text.length <= 80) return text;
+  if (text) return text.substring(0, 77) + '...';
+
+  // 6. title attribute as last resort
+  if (el.title) return el.title.substring(0, 80);
+
+  return '';
+}
+
+function describeElement(el) {
+  const role = inferRole(el);
+  if (!role) return null;
+
+  const name = getAccessibleName(el);
+
+  // Require a name for elements that are meaningless without one
+  const needsName = ['link', 'button', 'menuitem', 'menuitemcheckbox', 'menuitemradio',
+                     'option', 'tab', 'treeitem', 'heading', 'img', 'gridcell'];
+  if (needsName.includes(role) && !name) return null;
+
+  const tag = el.tagName.toLowerCase();
+  let desc = role;
+
+  // Add heading level
+  if (role === 'heading' && /^h[1-6]$/.test(tag)) {
+    desc += ' level=' + tag[1];
+  }
+
+  if (name) desc += ' "' + name + '"';
+
+  // Value for form elements
+  if (['INPUT', 'TEXTAREA'].includes(el.tagName) && el.value) {
+    desc += ' value="' + el.value.substring(0, 40) + '"';
+  }
+  if (el.tagName === 'SELECT' && el.selectedOptions?.length > 0) {
+    desc += ' value="' + el.selectedOptions[0].text.trim().substring(0, 40) + '"';
+  }
+
+  // States
+  const states = [];
+  if (el.disabled || el.getAttribute('aria-disabled') === 'true') states.push('disabled');
+  const expanded = el.getAttribute('aria-expanded');
+  if (expanded === 'true') states.push('expanded');
+  else if (expanded === 'false') states.push('collapsed');
+  if (el.getAttribute('aria-selected') === 'true') states.push('selected');
+  const checked = el.getAttribute('aria-checked');
+  if (checked === 'true') states.push('checked');
+  else if (checked === 'false') states.push('unchecked');
+  if (el.required || el.getAttribute('aria-required') === 'true') states.push('required');
+
+  if (states.length) desc += ' [' + states.join(', ') + ']';
+
+  return desc;
+}
+
+function buildElementMap() {
+  window.__manurevaElements = [];
+  const entries = [];
+  let idx = 0;
+  const MAX_ELEMENTS = 200;
+
+  const candidates = document.querySelectorAll(INTERACTIVE_SELECTOR);
+  for (const el of candidates) {
+    if (idx >= MAX_ELEMENTS) break;
+    if (!isVisible(el)) continue;
+
+    const info = describeElement(el);
+    if (!info) continue;
+
+    window.__manurevaElements[idx] = el;
+    entries.push('[' + idx + '] ' + info);
+    idx++;
+  }
+
+  return entries;
+}
+
+// ============================================================================
 // COMMON EXTRACTIONS
 // ============================================================================
-function extractKeyElements() {
-  const elements = [];
-
-  // Buttons — include aria-label for icon-only buttons (calendar arrows, etc.)
-  document.querySelectorAll('button, [role="button"], input[type="submit"]').forEach((el, i) => {
-    if (i < 25 && el.offsetParent !== null) {
-      const text = el.textContent.trim();
-      const ariaLabel = el.getAttribute('aria-label');
-      const title = el.getAttribute('title');
-      const id = el.id ? `#${el.id}` : '';
-      const label = text || el.value || ariaLabel || title;
-      if (label && label.length < 80) {
-        let entry = `Button: "${label}"`;
-        if (ariaLabel && ariaLabel !== label) entry += ` [aria-label="${ariaLabel}"]`;
-        if (id) entry += ` [selector="${id}"]`;
-        elements.push(entry);
-      }
-    }
-  });
-
-  // ARIA combobox/searchbox/listbox widgets (SPAs use these instead of <input>)
-  document.querySelectorAll('[role="combobox"], [role="searchbox"], [role="listbox"]').forEach((el, i) => {
-    if (i < 10 && el.offsetParent !== null) {
-      const ariaLabel = el.getAttribute('aria-label') || el.getAttribute('placeholder') || '';
-      const expanded = el.getAttribute('aria-expanded');
-      const id = el.id ? `#${el.id}` : '';
-      if (ariaLabel) {
-        let entry = `Widget: "${ariaLabel}" [role="${el.getAttribute('role')}"]`;
-        if (expanded) entry += ` [expanded=${expanded}]`;
-        if (id) entry += ` [selector="${id}"]`;
-        elements.push(entry);
-      }
-    }
-  });
-
-  // Open dropdown/listbox options — surface autocomplete suggestions to the LLM
-  document.querySelectorAll('[role="listbox"] [role="option"], [role="menu"] [role="menuitem"]').forEach((el, i) => {
-    if (i < 10 && el.offsetParent !== null) {
-      const text = el.textContent.trim();
-      const ariaLabel = el.getAttribute('aria-label');
-      if (text && text.length < 80) {
-        let entry = `Option: "${text}"`;
-        if (ariaLabel && ariaLabel !== text) entry += ` [aria-label="${ariaLabel}"]`;
-        elements.push(entry);
-      }
-    }
-  });
-
-  // Calendar/date cells — critical for date pickers
-  document.querySelectorAll('[role="gridcell"], [role="option"], td[data-date], [data-day]').forEach((el, i) => {
-    if (i < 20 && el.offsetParent !== null) {
-      const text = el.textContent.trim();
-      const ariaLabel = el.getAttribute('aria-label');
-      const dataDate = el.getAttribute('data-date') || el.getAttribute('data-day');
-      if (text && text.length < 50) {
-        let entry = `Cell: "${text}"`;
-        if (ariaLabel) entry += ` [aria-label="${ariaLabel}"]`;
-        if (dataDate) entry += ` [data-date="${dataDate}"]`;
-        elements.push(entry);
-      }
-    }
-  });
-
-  // Calendar header (current month/year) — helps LLM navigate to target month
-  document.querySelectorAll('[role="heading"][aria-live], [role="grid"] caption, [class*="month"], [class*="Month"]').forEach((el, i) => {
-    if (i < 3 && el.offsetParent !== null) {
-      const text = el.textContent.trim();
-      if (text && text.length < 50) {
-        elements.push(`Calendar header: "${text}"`);
-      }
-    }
-  });
-
-  // Links in navigation
-  document.querySelectorAll('nav a, .menu a, #menu a, .nav a').forEach((el, i) => {
-    if (i < 10 && el.offsetParent !== null) {
-      const text = el.textContent.trim();
-      if (text && text.length < 50) {
-        elements.push(`Nav link: "${text}"`);
-      }
-    }
-  });
-
-  // Input fields — include selector info, also detect inputs without explicit type
-  document.querySelectorAll('input[type="text"], input[type="search"], input[type="email"], input[type="number"], input:not([type]), textarea').forEach((el, i) => {
-    if (i < 10 && el.offsetParent !== null) {
-      const label = el.getAttribute('placeholder') || el.getAttribute('aria-label') || el.name;
-      const id = el.id ? `#${el.id}` : '';
-      const name = el.name ? `[name="${el.name}"]` : '';
-      if (label) {
-        let entry = `Input: "${label}"`;
-        if (id) entry += ` [selector="${id}"]`;
-        else if (name) entry += ` [selector="${name}"]`;
-        elements.push(entry);
-      }
-    }
-  });
-
-  // Select/dropdown elements
-  document.querySelectorAll('select').forEach((el, i) => {
-    if (i < 5 && el.offsetParent !== null) {
-      const label = el.getAttribute('aria-label') || el.name || el.id;
-      if (label) {
-        elements.push(`Select: "${label}" [options: ${el.options.length}]`);
-      }
-    }
-  });
-
-  return elements;
-}
 
 function extractLinks() {
   const links = [];
@@ -439,11 +498,19 @@ function simulateRealClick(element) {
 }
 
 function handleClick(message, sendResponse) {
-  const { selector, text, description } = message;
+  const { selector, text, description, index } = message;
   let element = null;
 
-  // Try selector first (highest priority — most precise)
-  if (selector) {
+  // Priority 0: Index-based lookup (from element map — most reliable)
+  if (index !== undefined && index !== null && window.__manurevaElements) {
+    const idx = parseInt(index);
+    if (window.__manurevaElements[idx] && isVisible(window.__manurevaElements[idx])) {
+      element = window.__manurevaElements[idx];
+    }
+  }
+
+  // Try selector (fallback)
+  if (!element && selector) {
     element = document.querySelector(selector);
     // If selector found an element but it's not visible, try broader
     if (element && !isVisible(element)) {
@@ -588,11 +655,21 @@ function handleScroll(message, sendResponse) {
 }
 
 function handleType(message, sendResponse) {
-  const { selector, text } = message;
+  const { selector, text, index } = message;
+  let input = null;
 
-  // Find target element — support real inputs AND ARIA widget elements
-  // (e.g. div[role="combobox"], div[contenteditable])
-  let input = selector ? document.querySelector(selector) : document.activeElement;
+  // Priority 0: Index-based lookup (from element map)
+  if (index !== undefined && index !== null && window.__manurevaElements) {
+    const idx = parseInt(index);
+    if (window.__manurevaElements[idx] && isVisible(window.__manurevaElements[idx])) {
+      input = window.__manurevaElements[idx];
+    }
+  }
+
+  // Fallback: selector or active element
+  if (!input) {
+    input = selector ? document.querySelector(selector) : document.activeElement;
+  }
 
   if (!input || (input === document.body)) {
     // Try focused element, then ARIA comboboxes, then standard inputs
