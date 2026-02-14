@@ -35,6 +35,55 @@ const missionState = {
 const tabRegistry = new Map();
 
 // ============================================================================
+// STATE PERSISTENCE - Survives service worker restarts
+// ============================================================================
+async function persistMissionState() {
+  try {
+    await chrome.storage.session.set({
+      missionState: {
+        primaryGoal: missionState.primaryGoal,
+        missionType: missionState.missionType,
+        primaryTabId: missionState.primaryTabId,
+        primaryTabInfo: missionState.primaryTabInfo,
+        criticalFindings: missionState.criticalFindings,
+        currentStep: missionState.currentStep,
+        totalSteps: missionState.totalSteps,
+        progress: missionState.progress,
+        todoList: missionState.todoList,
+        completedActions: missionState.completedActions
+      }
+    });
+  } catch (e) {
+    console.warn('[Background] Failed to persist state:', e.message);
+  }
+}
+
+async function rehydrateMissionState() {
+  try {
+    const stored = await chrome.storage.session.get('missionState');
+    if (stored.missionState) {
+      const s = stored.missionState;
+      missionState.primaryGoal = s.primaryGoal || null;
+      missionState.missionType = s.missionType || 'general';
+      missionState.primaryTabId = s.primaryTabId || null;
+      missionState.primaryTabInfo = s.primaryTabInfo || null;
+      missionState.criticalFindings = s.criticalFindings || [];
+      missionState.currentStep = s.currentStep || 0;
+      missionState.totalSteps = s.totalSteps || 5;
+      missionState.progress = s.progress || '0/5';
+      missionState.todoList = s.todoList || [];
+      missionState.completedActions = s.completedActions || [];
+      console.log('[Background] Rehydrated mission state:', missionState.missionType, missionState.primaryGoal?.substring(0, 40));
+    }
+  } catch (e) {
+    console.warn('[Background] Failed to rehydrate state:', e.message);
+  }
+}
+
+// Rehydrate state on service worker startup
+rehydrateMissionState();
+
+// ============================================================================
 // MISSION TYPE DETECTION
 // ============================================================================
 function detectMissionType(goal) {
@@ -636,17 +685,21 @@ async function createTab(url, active = false) {
 
 async function switchToTab(tabId, platform) {
   console.log('[Background] 🔄 Switching to tab:', tabId, 'platform:', platform);
-  
+
   try {
-    let targetTabId = tabId;
-    
-    // Handle special values
-    if (tabId === 'primary' || tabId === 'jira' || (platform === 'jira' && !targetTabId)) {
+    let targetTabId = null;
+
+    // 1. Handle explicit "primary" keyword
+    if (tabId === 'primary') {
       targetTabId = missionState.primaryTabId;
       console.log('[Background] Using primary tab:', targetTabId);
     }
-    
-    // If still no tabId, search by platform
+    // 2. Handle numeric/valid tab ID (not a keyword)
+    else if (tabId && typeof tabId === 'number') {
+      targetTabId = tabId;
+    }
+
+    // 3. Search by platform if no tab resolved yet
     if (!targetTabId && platform) {
       // First check registry
       for (const [id, info] of tabRegistry.entries()) {
@@ -655,8 +708,8 @@ async function switchToTab(tabId, platform) {
           break;
         }
       }
-      
-      // Fallback: search all tabs
+
+      // Fallback: search all open tabs
       if (!targetTabId) {
         const tabs = await chrome.tabs.query({});
         for (const tab of tabs) {
@@ -742,11 +795,12 @@ async function executeInTab(tabId, action) {
 function setPrimaryTab(tabId, url, title) {
   missionState.primaryTabId = tabId;
   missionState.primaryTabInfo = { url, title, platform: detectPlatform(url) };
-  
+
   tabRegistry.set(tabId, {
     url, title, platform: detectPlatform(url), isPrimary: true, purpose: 'primary'
   });
-  
+
+  persistMissionState();
   console.log('[Background] Primary tab:', tabId, url);
   return { success: true };
 }
@@ -761,6 +815,7 @@ function setPrimaryGoal(goal, pageContext) {
   missionState.todoList = [];
   missionState.completedActions = [];
 
+  persistMissionState();
   console.log('[Background] Mission type detected:', missionState.missionType, 'for goal:', goal.substring(0, 80));
   return { success: true, missionType: missionState.missionType };
 }
@@ -794,18 +849,20 @@ function resetMission() {
   missionState.completedActions = [];
   tabRegistry.clear();
 
+  persistMissionState();
   return { success: true };
 }
 
 function addCriticalFinding(finding, source) {
   const entry = source ? `[${source}] ${finding}` : finding;
-  
+
   // Avoid duplicates
   if (!missionState.criticalFindings.some(f => f.includes(finding.substring(0, 50)))) {
     missionState.criticalFindings.push(entry);
+    persistMissionState();
     console.log('[Background] Added finding:', entry.substring(0, 80));
   }
-  
+
   return { success: true, count: missionState.criticalFindings.length };
 }
 
@@ -830,20 +887,23 @@ function updateTodoList(action, items, itemIndex, status) {
         createdAt: Date.now()
       }));
       console.log('[Background] Created todo list:', missionState.todoList.length, 'items');
+      persistMissionState();
       return { success: true, todoList: missionState.todoList };
-    
+
     case 'update':
       if (itemIndex >= 0 && itemIndex < missionState.todoList.length) {
         missionState.todoList[itemIndex].status = status;
         missionState.todoList[itemIndex].updatedAt = Date.now();
         console.log('[Background] Updated todo item', itemIndex, 'to', status);
+        persistMissionState();
       }
       return { success: true, todoList: missionState.todoList };
-    
+
     case 'clear':
       missionState.todoList = [];
+      persistMissionState();
       return { success: true };
-    
+
     default:
       return { success: false, error: 'Unknown todo action' };
   }
