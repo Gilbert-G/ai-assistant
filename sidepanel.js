@@ -264,6 +264,9 @@ async function sendMessageToAssistant(message, isUserInitiated = true) {
   state.isProcessing = true;
   elements.sendBtn.disabled = true;
 
+  // Ensure service worker stays alive during API call
+  startKeepAlive();
+
   if (isUserInitiated) {
     loopCount = 0;
     state.clickCount = 0;
@@ -424,6 +427,7 @@ async function updateMissionContext() {
 
 async function resetMission() {
   if (confirm('Reset the current mission?')) {
+    stopKeepAlive();
     await sendToBackground({ type: 'RESET_MISSION' }).catch(() => {});
 
     state.messages = [];
@@ -502,12 +506,70 @@ async function getPageContent(tabId) {
 }
 
 // ============================================================================
+// KEEPALIVE PORT - Prevents service worker termination during active missions
+// ============================================================================
+let keepAlivePort = null;
+
+function startKeepAlive() {
+  if (keepAlivePort) return;
+  try {
+    keepAlivePort = chrome.runtime.connect({ name: 'keepalive' });
+    keepAlivePort.onDisconnect.addListener(() => {
+      keepAlivePort = null;
+      // Reconnect if mission is still active or processing
+      if (state.missionActive || state.isProcessing) {
+        console.log('[Sidepanel] Keepalive lost during active mission, reconnecting...');
+        setTimeout(startKeepAlive, 1000);
+      }
+    });
+    console.log('[Sidepanel] Keepalive port connected');
+  } catch (e) {
+    console.warn('[Sidepanel] Failed to establish keepalive:', e.message);
+    keepAlivePort = null;
+  }
+}
+
+function stopKeepAlive() {
+  if (keepAlivePort) {
+    try { keepAlivePort.disconnect(); } catch (e) {}
+    keepAlivePort = null;
+  }
+}
+
+// ============================================================================
 // UTILITIES
 // ============================================================================
-function sendToBackground(message) {
-  return new Promise((resolve) => {
-    chrome.runtime.sendMessage(message, (response) => {
-      resolve(response);
-    });
-  });
+async function sendToBackground(message) {
+  const MAX_SEND_RETRIES = 3;
+
+  for (let attempt = 1; attempt <= MAX_SEND_RETRIES; attempt++) {
+    try {
+      const response = await new Promise((resolve, reject) => {
+        try {
+          chrome.runtime.sendMessage(message, (response) => {
+            if (chrome.runtime.lastError) {
+              reject(new Error(chrome.runtime.lastError.message));
+            } else {
+              resolve(response);
+            }
+          });
+        } catch (error) {
+          reject(error);
+        }
+      });
+      return response;
+    } catch (error) {
+      console.warn(`[Sidepanel] sendToBackground attempt ${attempt}/${MAX_SEND_RETRIES} failed:`, error.message);
+
+      if (attempt < MAX_SEND_RETRIES) {
+        // Try to re-establish keepalive (wakes up service worker)
+        startKeepAlive();
+        await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+        continue;
+      }
+
+      // Final attempt failed - return error object to maintain backward compatibility
+      return { success: false, error: `Connection lost: ${error.message}` };
+    }
+  }
 }

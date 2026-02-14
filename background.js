@@ -294,11 +294,26 @@ async function ensureApiKey() {
   }
 }
 
+function isNetworkError(error) {
+  if (error.name === 'AbortError') return true;
+  const msg = (error.message || '').toLowerCase();
+  return msg.includes('failed to fetch') ||
+         msg.includes('networkerror') ||
+         msg.includes('network request failed') ||
+         msg.includes('load failed') ||
+         msg.includes('the network connection was lost') ||
+         (error instanceof TypeError && msg.includes('fetch'));
+}
+
 async function fetchClaudeAPI(systemPrompt, messages) {
-  const MAX_RETRIES = 3;
-  const BACKOFF_BASE = 2000; // 2s, 4s, 8s
+  const MAX_RETRIES = 4;
+  const BACKOFF_BASE = 2000; // 2s, 4s, 8s, 16s
+  const FETCH_TIMEOUT = 120000; // 2 minutes - abort hung requests
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
+
     try {
       const response = await fetch(CONFIG.CLAUDE_API_URL, {
         method: 'POST',
@@ -313,8 +328,11 @@ async function fetchClaudeAPI(systemPrompt, messages) {
           max_tokens: CONFIG.MAX_TOKENS,
           system: systemPrompt,
           messages: messages
-        })
+        }),
+        signal: controller.signal
       });
+
+      clearTimeout(timeoutId);
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
@@ -338,10 +356,13 @@ async function fetchClaudeAPI(systemPrompt, messages) {
         stopReason: data.stop_reason
       };
     } catch (error) {
-      // Retry on network errors (Failed to fetch), not on JSON parse / logic errors
-      if (error.message === 'Failed to fetch' && attempt < MAX_RETRIES) {
+      clearTimeout(timeoutId);
+
+      // Retry on network errors (Failed to fetch, timeout, etc.), not on JSON parse / logic errors
+      if (isNetworkError(error) && attempt < MAX_RETRIES) {
         const delay = BACKOFF_BASE * Math.pow(2, attempt - 1);
-        console.warn(`[Background] Fetch failed, retrying in ${delay}ms (attempt ${attempt}/${MAX_RETRIES})`);
+        const reason = error.name === 'AbortError' ? 'timeout' : error.message;
+        console.warn(`[Background] Fetch failed (${reason}), retrying in ${delay}ms (attempt ${attempt}/${MAX_RETRIES})`);
         await new Promise(resolve => setTimeout(resolve, delay));
         continue;
       }
@@ -871,4 +892,20 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   tabRegistry.delete(tabId);
 });
 
-console.log('[Manureva] Background v4.0.0 loaded - Advanced Multi-Step Workflow');
+// ============================================================================
+// KEEPALIVE PORT - Prevents service worker termination during active missions
+// ============================================================================
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name === 'keepalive') {
+    console.log('[Background] Keepalive port connected');
+    const keepAliveInterval = setInterval(() => {
+      // Periodic no-op to keep the service worker event loop active
+    }, 20000);
+    port.onDisconnect.addListener(() => {
+      clearInterval(keepAliveInterval);
+      console.log('[Background] Keepalive port disconnected');
+    });
+  }
+});
+
+console.log('[Manureva] Background v4.1.0 loaded - Advanced Multi-Step Workflow');
