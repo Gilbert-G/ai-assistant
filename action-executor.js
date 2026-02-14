@@ -362,6 +362,7 @@ async function executeDomAction(action) {
           tabId: state.currentTabId,
           action: {
             type: 'CLICK',
+            index: action.index,
             selector: action.selector,
             text: action.text,
             description: action.description
@@ -381,6 +382,7 @@ async function executeDomAction(action) {
             tabId: state.currentTabId,
             action: {
               type: 'CLICK',
+              index: action.index,
               selector: action.selector,
               text: action.text,
               description: action.description
@@ -448,12 +450,15 @@ async function executeDomAction(action) {
           tabId: state.currentTabId,
           action: {
             type: 'TYPE',
+            index: action.index,
             selector: action.selector,
             text: action.text
           }
         });
 
         result.executed = true;
+        // Wait for autocomplete/dropdown to appear after typing
+        await new Promise(resolve => setTimeout(resolve, 1500));
         addSystemNotice(`\u2705 Typed`);
         logAction('type', action.text, 'success');
       } catch (err) {
@@ -471,7 +476,11 @@ async function executeDomAction(action) {
           tabId: state.currentTabId,
           action: {
             type: 'PRESS_KEY',
-            key: action.key
+            key: action.key,
+            ctrl: action.ctrl,
+            shift: action.shift,
+            alt: action.alt,
+            meta: action.meta
           }
         });
 
@@ -591,7 +600,7 @@ async function buildContinuationMessage() {
   }
 
   if (pageContent?.keyElements?.length > 0) {
-    msg += `**Interactive Elements:**\n${pageContent.keyElements.slice(0, 15).join('\n')}\n\n`;
+    msg += `**Element Map:**\n${pageContent.keyElements.join('\n')}\n\n`;
   }
 
   // Mission-specific closing instruction

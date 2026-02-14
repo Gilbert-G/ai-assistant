@@ -6,6 +6,10 @@ if (window.__manurevaContentScriptLoaded) {
   console.log('[Manureva Content] Already loaded, skipping re-injection');
 } else {
 window.__manurevaContentScriptLoaded = true;
+
+// Global element registry for index-based interaction
+window.__manurevaElements = [];
+
 console.log('[Manureva Content] Script loaded');
 
 // ============================================================================
@@ -111,7 +115,7 @@ function extractPageContent() {
   }
   
   // Common extractions
-  result.keyElements = extractKeyElements();
+  result.keyElements = buildElementMap();
   result.relatedLinks = extractLinks();
   result.navigationOptions = extractNavigation();
   
@@ -263,78 +267,276 @@ function extractGenericContent() {
 }
 
 // ============================================================================
+// UNIVERSAL ELEMENT MAP — Indexed Accessibility Tree
+// ============================================================================
+const INTERACTIVE_SELECTOR = [
+  'a[href]',
+  'button', '[role="button"]',
+  'input:not([type="hidden"])', 'textarea', 'select',
+  'select option',
+  '[role="link"]', '[role="menuitem"]', '[role="menuitemcheckbox"]', '[role="menuitemradio"]',
+  '[role="option"]', '[role="tab"]', '[role="treeitem"]',
+  '[role="switch"]', '[role="checkbox"]', '[role="radio"]',
+  '[role="combobox"]', '[role="searchbox"]', '[role="textbox"]', '[role="listbox"]',
+  '[role="slider"]', '[role="spinbutton"]', '[role="gridcell"]',
+  '[contenteditable="true"]', '[contenteditable=""]',
+  'summary',
+  'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+  'img[alt]', '[role="img"][aria-label]',
+  '[role="alert"]', '[role="status"]',
+  'dialog[open]', '[role="dialog"]', '[role="alertdialog"]'
+].join(', ');
+
+function inferRole(el) {
+  const tag = el.tagName.toLowerCase();
+  const explicit = el.getAttribute('role');
+  if (explicit) return explicit;
+
+  switch (tag) {
+    case 'a': return el.hasAttribute('href') ? 'link' : null;
+    case 'button': case 'summary': return 'button';
+    case 'input': {
+      const t = (el.getAttribute('type') || 'text').toLowerCase();
+      if (t === 'submit' || t === 'button' || t === 'reset' || t === 'image') return 'button';
+      if (t === 'checkbox') return 'checkbox';
+      if (t === 'radio') return 'radio';
+      if (t === 'range') return 'slider';
+      if (t === 'number') return 'spinbutton';
+      if (t === 'search') return 'searchbox';
+      return 'textbox';
+    }
+    case 'textarea': return 'textbox';
+    case 'select': return 'combobox';
+    case 'option': return 'option';
+    case 'img': return 'img';
+    case 'dialog': return 'dialog';
+    case 'h1': case 'h2': case 'h3': case 'h4': case 'h5': case 'h6': return 'heading';
+    default:
+      if (el.hasAttribute('contenteditable') && el.getAttribute('contenteditable') !== 'false') return 'textbox';
+      return null;
+  }
+}
+
+function getAccessibleName(el) {
+  // 1. aria-label
+  const ariaLabel = el.getAttribute('aria-label');
+  if (ariaLabel) return ariaLabel.trim().substring(0, 80);
+
+  // 2. aria-labelledby
+  const labelledBy = el.getAttribute('aria-labelledby');
+  if (labelledBy) {
+    const parts = labelledBy.split(/\s+/)
+      .map(id => document.getElementById(id)?.textContent?.trim())
+      .filter(Boolean);
+    if (parts.length) return parts.join(' ').substring(0, 80);
+  }
+
+  const tag = el.tagName;
+
+  // 3. Form controls: associated <label>, placeholder, title, name
+  if (['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) {
+    if (el.id) {
+      const lbl = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+      if (lbl) return lbl.textContent.trim().substring(0, 80);
+    }
+    const parentLabel = el.closest('label');
+    if (parentLabel) {
+      const clone = parentLabel.cloneNode(true);
+      clone.querySelectorAll('input, textarea, select').forEach(c => c.remove());
+      const labelText = clone.textContent.trim();
+      if (labelText) return labelText.substring(0, 80);
+    }
+    if (el.placeholder) return el.placeholder.substring(0, 80);
+    if (el.title) return el.title.substring(0, 80);
+    if (el.name) return el.name.substring(0, 80);
+    return '';
+  }
+
+  // 4. Images: alt text
+  if (tag === 'IMG') {
+    return (el.getAttribute('alt') || '').trim().substring(0, 80);
+  }
+
+  // 5. Text content (buttons, links, headings, options, etc.)
+  const text = el.textContent?.trim().replace(/\s+/g, ' ');
+  if (text && text.length <= 80) return text;
+  if (text) return text.substring(0, 77) + '...';
+
+  // 6. title attribute as last resort
+  if (el.title) return el.title.substring(0, 80);
+
+  return '';
+}
+
+function describeElement(el) {
+  const role = inferRole(el);
+  if (!role) return null;
+
+  const name = getAccessibleName(el);
+
+  // Require a name for elements that are meaningless without one
+  const needsName = ['link', 'button', 'menuitem', 'menuitemcheckbox', 'menuitemradio',
+                     'option', 'tab', 'treeitem', 'heading', 'img', 'gridcell',
+                     'alert', 'status', 'dialog', 'alertdialog'];
+  if (needsName.includes(role) && !name) return null;
+
+  const tag = el.tagName.toLowerCase();
+  let desc = role;
+
+  // Add heading level
+  if (role === 'heading' && /^h[1-6]$/.test(tag)) {
+    desc += ' level=' + tag[1];
+  }
+
+  if (name) desc += ' "' + name + '"';
+
+  // Value for form elements
+  if (['INPUT', 'TEXTAREA'].includes(el.tagName) && el.value) {
+    desc += ' value="' + el.value.substring(0, 40) + '"';
+  }
+  if (el.tagName === 'SELECT' && el.selectedOptions?.length > 0) {
+    desc += ' value="' + el.selectedOptions[0].text.trim().substring(0, 40) + '"';
+  }
+
+  // States
+  const states = [];
+  if (el.disabled || el.getAttribute('aria-disabled') === 'true') states.push('disabled');
+  const expanded = el.getAttribute('aria-expanded');
+  if (expanded === 'true') states.push('expanded');
+  else if (expanded === 'false') states.push('collapsed');
+  if (el.getAttribute('aria-selected') === 'true') states.push('selected');
+  const checked = el.getAttribute('aria-checked');
+  if (checked === 'true') states.push('checked');
+  else if (checked === 'false') states.push('unchecked');
+  if (el.required || el.getAttribute('aria-required') === 'true') states.push('required');
+
+  if (states.length) desc += ' [' + states.join(', ') + ']';
+
+  return desc;
+}
+
+// Detect active overlays, dialogs, cookie banners, and modals that block the page
+function detectActiveOverlay() {
+  // 1. Native <dialog open>
+  const openDialog = document.querySelector('dialog[open]');
+  if (openDialog) return openDialog;
+
+  // 2. ARIA dialogs
+  const ariaDialog = document.querySelector('[role="dialog"]:not([aria-hidden="true"]), [role="alertdialog"]:not([aria-hidden="true"])');
+  if (ariaDialog && isVisible(ariaDialog)) return ariaDialog;
+
+  // 3. Common modal/overlay CSS patterns
+  const overlaySelectors = [
+    '.modal.show', '.modal.in', '.modal.is-open', '.modal.is-active',
+    '.overlay.active', '.overlay.visible',
+    '[class*="cookie-banner"]', '[class*="cookie-consent"]',
+    '[class*="consent-banner"]', '[class*="consent-modal"]',
+    '[id*="cookie-banner"]', '[id*="cookie-consent"]',
+    '[id*="consent-banner"]', '[id*="consent-modal"]',
+    '[id*="gdpr"]', '[class*="gdpr"]',
+    '[class*="CookieConsent"]', '[id*="CookieConsent"]',
+    '[class*="onetrust"]', '[id*="onetrust"]',
+    '[class*="cc-banner"]', '[class*="cc-window"]'
+  ];
+
+  for (const sel of overlaySelectors) {
+    try {
+      const el = document.querySelector(sel);
+      if (el && isVisible(el)) return el;
+    } catch (e) {} // ignore invalid selectors
+  }
+
+  // 4. Full-screen fixed/sticky elements with high z-index (generic modal detection)
+  const topLevelDivs = document.querySelectorAll('body > div, body > aside, body > section');
+  for (const el of topLevelDivs) {
+    try {
+      const style = getComputedStyle(el);
+      if ((style.position === 'fixed' || style.position === 'sticky') &&
+          style.display !== 'none' &&
+          style.visibility !== 'hidden' &&
+          parseFloat(style.opacity) > 0 &&
+          parseInt(style.zIndex) > 100 &&
+          el.offsetHeight > 80 &&
+          el.offsetWidth > 200) {
+        // Check it contains at least one interactive element (not just a floating header/nav)
+        if (el.querySelector('button, a, [role="button"], input')) {
+          return el;
+        }
+      }
+    } catch (e) {}
+  }
+
+  return null;
+}
+
+function buildElementMap() {
+  window.__manurevaElements = [];
+  const entries = [];
+  let idx = 0;
+  const MAX_ELEMENTS = 200;
+
+  const overlay = detectActiveOverlay();
+  const candidates = document.querySelectorAll(INTERACTIVE_SELECTOR);
+
+  if (overlay) {
+    // When an overlay is detected, show overlay elements FIRST with a clear annotation
+    entries.push('--- OVERLAY/DIALOG DETECTED (dismiss this first) ---');
+
+    for (const el of candidates) {
+      if (idx >= MAX_ELEMENTS) break;
+      if (!overlay.contains(el)) continue;
+      if (!isVisibleForMap(el)) continue;
+
+      const info = describeElement(el);
+      if (!info) continue;
+
+      window.__manurevaElements[idx] = el;
+      entries.push('[' + idx + '] ' + info);
+      idx++;
+    }
+
+    entries.push('--- PAGE ELEMENTS (behind overlay) ---');
+
+    for (const el of candidates) {
+      if (idx >= MAX_ELEMENTS) break;
+      if (overlay.contains(el)) continue;
+      if (!isVisibleForMap(el)) continue;
+
+      const info = describeElement(el);
+      if (!info) continue;
+
+      window.__manurevaElements[idx] = el;
+      entries.push('[' + idx + '] ' + info);
+      idx++;
+    }
+  } else {
+    for (const el of candidates) {
+      if (idx >= MAX_ELEMENTS) break;
+      if (!isVisibleForMap(el)) continue;
+
+      const info = describeElement(el);
+      if (!info) continue;
+
+      window.__manurevaElements[idx] = el;
+      entries.push('[' + idx + '] ' + info);
+      idx++;
+    }
+  }
+
+  return entries;
+}
+
+// Slightly relaxed visibility check for element map building.
+// Native <option> inside <select> is always "visible" for map purposes
+// even though offsetParent may be null.
+function isVisibleForMap(el) {
+  if (el.tagName === 'OPTION') return true;
+  return isVisible(el);
+}
+
+// ============================================================================
 // COMMON EXTRACTIONS
 // ============================================================================
-function extractKeyElements() {
-  const elements = [];
-
-  // Buttons — include aria-label and selector hints
-  document.querySelectorAll('button, [role="button"], input[type="submit"]').forEach((el, i) => {
-    if (i < 15 && el.offsetParent !== null) {
-      const text = el.textContent.trim() || el.value || el.getAttribute('aria-label');
-      const ariaLabel = el.getAttribute('aria-label');
-      const id = el.id ? `#${el.id}` : '';
-      if (text && text.length < 50) {
-        let entry = `Button: "${text}"`;
-        if (ariaLabel && ariaLabel !== text) entry += ` [aria-label="${ariaLabel}"]`;
-        if (id) entry += ` [selector="${id}"]`;
-        elements.push(entry);
-      }
-    }
-  });
-
-  // Calendar/date cells — critical for date pickers
-  document.querySelectorAll('[role="gridcell"], [role="option"], td[data-date], [data-day]').forEach((el, i) => {
-    if (i < 20 && el.offsetParent !== null) {
-      const text = el.textContent.trim();
-      const ariaLabel = el.getAttribute('aria-label');
-      const dataDate = el.getAttribute('data-date') || el.getAttribute('data-day');
-      if (text && text.length < 50) {
-        let entry = `Cell: "${text}"`;
-        if (ariaLabel) entry += ` [aria-label="${ariaLabel}"]`;
-        if (dataDate) entry += ` [data-date="${dataDate}"]`;
-        elements.push(entry);
-      }
-    }
-  });
-
-  // Links in navigation
-  document.querySelectorAll('nav a, .menu a, #menu a, .nav a').forEach((el, i) => {
-    if (i < 10 && el.offsetParent !== null) {
-      const text = el.textContent.trim();
-      if (text && text.length < 50) {
-        elements.push(`Nav link: "${text}"`);
-      }
-    }
-  });
-
-  // Input fields — include selector info
-  document.querySelectorAll('input[type="text"], input[type="search"], input[type="email"], input[type="number"], textarea').forEach((el, i) => {
-    if (i < 8 && el.offsetParent !== null) {
-      const label = el.getAttribute('placeholder') || el.getAttribute('aria-label') || el.name;
-      const id = el.id ? `#${el.id}` : '';
-      const name = el.name ? `[name="${el.name}"]` : '';
-      if (label) {
-        let entry = `Input: "${label}"`;
-        if (id) entry += ` [selector="${id}"]`;
-        else if (name) entry += ` [selector="${name}"]`;
-        elements.push(entry);
-      }
-    }
-  });
-
-  // Select/dropdown elements
-  document.querySelectorAll('select').forEach((el, i) => {
-    if (i < 5 && el.offsetParent !== null) {
-      const label = el.getAttribute('aria-label') || el.name || el.id;
-      if (label) {
-        elements.push(`Select: "${label}" [options: ${el.options.length}]`);
-      }
-    }
-  });
-
-  return elements;
-}
 
 function extractLinks() {
   const links = [];
@@ -399,32 +601,70 @@ function simulateRealClick(element) {
 }
 
 function handleClick(message, sendResponse) {
-  const { selector, text, description } = message;
+  const { selector, text, description, index } = message;
   let element = null;
 
-  // Try selector first (highest priority — most precise)
-  if (selector) {
+  // Priority 0: Index-based lookup (from element map — most reliable)
+  if (index !== undefined && index !== null && window.__manurevaElements) {
+    const idx = parseInt(index);
+    const candidate = window.__manurevaElements[idx];
+    // Verify the element is still in the DOM and visible (guards against stale references)
+    if (candidate && document.body.contains(candidate) &&
+        (candidate.tagName === 'OPTION' || isVisible(candidate))) {
+      element = candidate;
+    }
+  }
+
+  // Special handling: clicking an <option> inside a <select> sets the value directly
+  if (element && element.tagName === 'OPTION' && element.parentElement?.tagName === 'SELECT') {
+    const select = element.parentElement;
+    select.value = element.value;
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    select.dispatchEvent(new Event('input', { bubbles: true }));
+    showClickFeedback(select);
+    sendResponse({ success: true, method: 'select-option' });
+    return;
+  }
+
+  // Try selector (fallback)
+  if (!element && selector) {
     element = document.querySelector(selector);
     // If selector found an element but it's not visible, try broader
     if (element && !isVisible(element)) {
+      // First try other matching elements
       const allBySelector = document.querySelectorAll(selector);
-      element = null;
+      let found = false;
       for (const el of allBySelector) {
         if (isVisible(el)) {
           element = el;
+          found = true;
           break;
         }
+      }
+      // If no visible match, walk up to the nearest visible parent (SPA overlay pattern).
+      // SPAs often hide the real <input> and overlay a styled container.
+      if (!found && element) {
+        let parent = element.parentElement;
+        while (parent && parent !== document.body) {
+          if (isVisible(parent) && parent.offsetHeight > 0 && parent.offsetWidth > 0) {
+            element = parent;
+            found = true;
+            break;
+          }
+          parent = parent.parentElement;
+        }
+        if (!found) element = null;
       }
     }
   }
 
   // Try text content with improved matching
   if (!element && text) {
-    // Broad query covering interactive elements, SPA nav patterns, and framework components
+    // Broad query covering interactive elements, SPA nav patterns, ARIA widgets, and framework components
     const allElements = document.querySelectorAll(
       'button, a, [role="button"], [role="gridcell"], [role="option"], [role="tab"], [role="menuitem"], ' +
-      '[role="link"], [role="switch"], [role="checkbox"], [role="radio"], ' +
-      'input[type="submit"], input[type="button"], [onclick], [data-testid], ' +
+      '[role="link"], [role="switch"], [role="checkbox"], [role="radio"], [role="combobox"], [role="searchbox"], ' +
+      'input[type="submit"], input[type="button"], input, [onclick], [data-testid], ' +
       'td, th, li, label, span, div[tabindex], span[tabindex], ' +
       'nav a, nav button, nav span, nav div, ' +
       '[class*="tab"], [class*="Tab"], [class*="nav-"], [class*="menu-"]'
@@ -435,6 +675,7 @@ function handleClick(message, sendResponse) {
     let exactInViewport = null;  // exact + in viewport (best of best)
     let substringMatch = null;   // text contains search
     let ariaMatch = null;        // aria-label match
+    let placeholderMatch = null; // placeholder attribute match
     let directTextMatch = null;  // element's own direct text (not children)
 
     for (const el of allElements) {
@@ -443,6 +684,7 @@ function handleClick(message, sendResponse) {
       const elText = el.textContent.trim().toLowerCase();
       const elValue = el.value?.toLowerCase() || '';
       const elAriaLabel = el.getAttribute('aria-label')?.toLowerCase() || '';
+      const elPlaceholder = el.getAttribute('placeholder')?.toLowerCase() || '';
       // Direct text: only the element's own text nodes (not descendants)
       const directText = Array.from(el.childNodes)
         .filter(n => n.nodeType === Node.TEXT_NODE)
@@ -456,9 +698,12 @@ function handleClick(message, sendResponse) {
         if (!exactMatch) exactMatch = el;
         if (!exactInViewport && isInViewport(el)) exactInViewport = el;
       }
-      // Priority 2: Exact aria-label match
+      // Priority 2: Exact aria-label or placeholder match
       else if (elAriaLabel === textLower || elAriaLabel.includes(textLower)) {
         if (!ariaMatch) ariaMatch = el;
+      }
+      else if (elPlaceholder === textLower || elPlaceholder.includes(textLower)) {
+        if (!placeholderMatch) placeholderMatch = el;
       }
       // Priority 3: Substring match (only if text is long enough to be unambiguous)
       else if (textLower.length >= 3 && (elText.includes(textLower) || elValue.includes(textLower))) {
@@ -469,8 +714,8 @@ function handleClick(message, sendResponse) {
       }
     }
 
-    // Select best match: in-viewport exact > direct text > exact > aria > substring
-    element = exactInViewport || directTextMatch || exactMatch || ariaMatch || substringMatch;
+    // Select best match: in-viewport exact > direct text > exact > aria > placeholder > substring
+    element = exactInViewport || directTextMatch || exactMatch || ariaMatch || placeholderMatch || substringMatch;
 
     // Last resort: walk all visible elements in the DOM for a text match
     if (!element) {
@@ -527,75 +772,157 @@ function handleScroll(message, sendResponse) {
 }
 
 function handleType(message, sendResponse) {
-  const { selector, text } = message;
-  
-  // Find input
-  let input = selector ? document.querySelector(selector) : document.activeElement;
-  
-  // Try to find any focused or visible input
-  if (!input || !['INPUT', 'TEXTAREA'].includes(input.tagName)) {
-    input = document.querySelector('input:focus, textarea:focus') ||
-            document.querySelector('input[type="text"]:not([type="hidden"]), textarea');
-  }
-  
-  if (input) {
-    input.focus();
+  const { selector, text, index } = message;
+  let input = null;
 
-    // Use the native value setter to bypass React/Angular internal value tracking.
-    // Directly setting .value on framework-controlled inputs is silently ignored
-    // because frameworks override the setter. The native HTMLInputElement setter
-    // updates the actual DOM value, and the subsequent 'input' event triggers
-    // the framework's state update.
+  // Priority 0: Index-based lookup (from element map)
+  if (index !== undefined && index !== null && window.__manurevaElements) {
+    const idx = parseInt(index);
+    const candidate = window.__manurevaElements[idx];
+    // Verify element is still in DOM and visible (guards against stale references)
+    if (candidate && document.body.contains(candidate) && isVisible(candidate)) {
+      input = candidate;
+    }
+  }
+
+  // Fallback: selector or active element
+  if (!input) {
+    input = selector ? document.querySelector(selector) : document.activeElement;
+  }
+
+  if (!input || (input === document.body)) {
+    // Try focused element, then ARIA comboboxes, then standard inputs
+    input = document.querySelector('input:focus, textarea:focus, [role="combobox"]:focus, [contenteditable]:focus') ||
+            document.querySelector('[role="combobox"]') ||
+            document.querySelector('input[type="text"]:not([type="hidden"]), input:not([type]), textarea');
+  }
+
+  // Accept INPUT, TEXTAREA, contenteditable, and ARIA combobox/searchbox elements
+  const isTypable = input && (
+    ['INPUT', 'TEXTAREA'].includes(input.tagName) ||
+    input.hasAttribute('contenteditable') ||
+    ['combobox', 'searchbox', 'textbox'].includes(input.getAttribute('role'))
+  );
+
+  if (!isTypable) {
+    sendResponse({ success: false, error: 'No input field found' });
+    return;
+  }
+
+  input.focus();
+
+  // Clear existing value
+  if (['INPUT', 'TEXTAREA'].includes(input.tagName)) {
     const prototype = input.tagName === 'TEXTAREA'
       ? HTMLTextAreaElement.prototype
       : HTMLInputElement.prototype;
     const nativeSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
     if (nativeSetter) {
-      nativeSetter.call(input, text);
+      nativeSetter.call(input, '');
     } else {
-      input.value = text;
+      input.value = '';
     }
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-
-    showTypeFeedback(input);
-    sendResponse({ success: true });
-  } else {
-    sendResponse({ success: false, error: 'No input field found' });
+  } else if (input.hasAttribute('contenteditable')) {
+    input.textContent = '';
   }
+
+  // Simulate per-character keyboard input — required for SPA autocomplete/search.
+  // SPAs like Google Flights listen for individual keydown/keyup events and
+  // InputEvents with proper `inputType` and `data` properties.
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+
+    input.dispatchEvent(new KeyboardEvent('keydown', {
+      key: char, code: `Key${char.toUpperCase()}`,
+      bubbles: true, cancelable: true
+    }));
+    input.dispatchEvent(new KeyboardEvent('keypress', {
+      key: char, code: `Key${char.toUpperCase()}`,
+      bubbles: true, cancelable: true
+    }));
+
+    // Append character to value
+    if (['INPUT', 'TEXTAREA'].includes(input.tagName)) {
+      const prototype = input.tagName === 'TEXTAREA'
+        ? HTMLTextAreaElement.prototype
+        : HTMLInputElement.prototype;
+      const nativeSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+      if (nativeSetter) {
+        nativeSetter.call(input, text.substring(0, i + 1));
+      } else {
+        input.value = text.substring(0, i + 1);
+      }
+    } else if (input.hasAttribute('contenteditable')) {
+      input.textContent = text.substring(0, i + 1);
+    }
+
+    // Fire InputEvent with proper properties for framework compatibility
+    input.dispatchEvent(new InputEvent('input', {
+      bubbles: true,
+      cancelable: true,
+      inputType: 'insertText',
+      data: char
+    }));
+
+    input.dispatchEvent(new KeyboardEvent('keyup', {
+      key: char, code: `Key${char.toUpperCase()}`,
+      bubbles: true, cancelable: true
+    }));
+  }
+
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+
+  showTypeFeedback(input);
+  sendResponse({ success: true });
 }
 
 function handlePressKey(message, sendResponse) {
-  const { key } = message;
-  
+  const { key, ctrl, shift, alt, meta } = message;
+
   const keyMap = {
     'Return': 'Enter',
     'Enter': 'Enter',
     'Escape': 'Escape',
     'Tab': 'Tab',
-    'Backspace': 'Backspace'
+    'Backspace': 'Backspace',
+    'Delete': 'Delete',
+    'ArrowUp': 'ArrowUp',
+    'ArrowDown': 'ArrowDown',
+    'ArrowLeft': 'ArrowLeft',
+    'ArrowRight': 'ArrowRight',
+    'Home': 'Home',
+    'End': 'End',
+    'PageUp': 'PageUp',
+    'PageDown': 'PageDown',
+    'Space': ' '
   };
-  
+
   const keyCode = keyMap[key] || key;
-  
-  const event = new KeyboardEvent('keydown', {
+  const modifiers = {
+    ctrlKey: ctrl === 'true' || ctrl === true,
+    shiftKey: shift === 'true' || shift === true,
+    altKey: alt === 'true' || alt === true,
+    metaKey: meta === 'true' || meta === true
+  };
+
+  const target = document.activeElement || document.body;
+
+  target.dispatchEvent(new KeyboardEvent('keydown', {
     key: keyCode,
     code: keyCode,
     bubbles: true,
-    cancelable: true
-  });
-  
-  document.activeElement.dispatchEvent(event);
-  
-  // Also trigger keyup
-  const keyUpEvent = new KeyboardEvent('keyup', {
+    cancelable: true,
+    ...modifiers
+  }));
+
+  target.dispatchEvent(new KeyboardEvent('keyup', {
     key: keyCode,
     code: keyCode,
     bubbles: true,
-    cancelable: true
-  });
-  document.activeElement.dispatchEvent(keyUpEvent);
-  
+    cancelable: true,
+    ...modifiers
+  }));
+
   sendResponse({ success: true });
 }
 
