@@ -28,12 +28,20 @@ function parseAllActions(content) {
 
 function parseAttributes(str) {
   const attrs = {};
-  // Match attr="value" or attr='value'
-  const attrRegex = /(\w+)=["']([^"']+)["']/g;
+  // Match double-quoted and single-quoted attributes separately
+  // so that a single quote inside double quotes (and vice versa) is preserved.
+  const doubleQuoted = /(\w+)="([^"]*)"/g;
+  const singleQuoted = /(\w+)='([^']*)'/g;
   let match;
 
-  while ((match = attrRegex.exec(str)) !== null) {
+  while ((match = doubleQuoted.exec(str)) !== null) {
     attrs[match[1]] = match[2];
+  }
+  while ((match = singleQuoted.exec(str)) !== null) {
+    // Only set if not already captured by double-quoted pass
+    if (!(match[1] in attrs)) {
+      attrs[match[1]] = match[2];
+    }
   }
 
   return attrs;

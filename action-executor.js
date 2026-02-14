@@ -7,6 +7,25 @@
 //                     detectPlatform (from shared.js)
 
 // ============================================================================
+// HELPERS
+// ============================================================================
+
+// Wait for a tab to finish loading (polls tab status instead of fixed delays).
+async function waitForTabReady(tabId, timeoutMs = 15000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const info = await sendToBackground({ type: 'GET_TAB_INFO', tabId });
+    if (info?.status === 'complete') {
+      // Give the page a moment to run its JS after "complete"
+      await new Promise(resolve => setTimeout(resolve, 500));
+      return true;
+    }
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+  return false; // timed out
+}
+
+// ============================================================================
 // LOGGING HELPERS
 // ============================================================================
 function logAction(type, target, status) {
@@ -160,8 +179,8 @@ async function parseAndExecuteActions(content, userMessage = '') {
           addSystemNotice(`\u2705 Opened: ${result.title || targetUrl}`);
           logAction('navigate', targetUrl, 'success');
 
-          // Wait for page to fully render (SPAs need extra time) then inject content script
-          await new Promise(resolve => setTimeout(resolve, 3000));
+          // Wait for the new tab to finish loading, then inject content script
+          await waitForTabReady(result.tabId, 15000);
           await sendToBackground({ type: 'INJECT_CONTENT_SCRIPT', tabId: result.tabId });
           await new Promise(resolve => setTimeout(resolve, 500));
         } else {

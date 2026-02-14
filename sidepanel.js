@@ -145,6 +145,24 @@ function setupEventListeners() {
       handleTabUpdate(message);
     }
   });
+
+  // Track user tab switches to keep currentTabId accurate
+  chrome.tabs.onActivated.addListener((activeInfo) => {
+    if (!state.isProcessing) {
+      state.currentTabId = activeInfo.tabId;
+    }
+  });
+
+  // Invalidate stale tab references when tabs are closed
+  chrome.tabs.onRemoved.addListener((tabId) => {
+    state.openTabs.delete(tabId);
+    if (state.currentTabId === tabId) {
+      state.currentTabId = state.primaryTabId;
+    }
+    if (state.primaryTabId === tabId) {
+      state.primaryTabId = null;
+    }
+  });
 }
 
 // ============================================================================
@@ -223,12 +241,25 @@ function trimMessageHistory() {
   // Keep only the most recent messages
   let trimmed = state.messages.slice(-MAX_MESSAGE_HISTORY);
 
-  // Ensure the first message is a user message (API requirement)
-  if (trimmed[0]?.role !== 'user') {
+  // Ensure the first message is a user message (Claude API requirement)
+  while (trimmed.length > 0 && trimmed[0].role !== 'user') {
     trimmed = trimmed.slice(1);
   }
 
-  state.messages = trimmed;
+  // Ensure messages strictly alternate user/assistant (API requirement).
+  // Remove consecutive same-role messages from the start of the trimmed window.
+  const valid = [];
+  for (const msg of trimmed) {
+    const lastRole = valid.length > 0 ? valid[valid.length - 1].role : null;
+    if (msg.role === lastRole) {
+      // Consecutive same role: keep the newer one (replace last)
+      valid[valid.length - 1] = msg;
+    } else {
+      valid.push(msg);
+    }
+  }
+
+  state.messages = valid;
 }
 
 // ============================================================================
@@ -264,15 +295,24 @@ async function sendMessageToAssistant(message, isUserInitiated = true) {
   state.isProcessing = true;
   elements.sendBtn.disabled = true;
 
+  // Ensure service worker stays alive during API call
+  startKeepAlive();
+
   if (isUserInitiated) {
-    loopCount = 0;
-    state.clickCount = 0;
-    state.navigationCount = 0;
-    state.scrollCount = 0;
-    state.typeCount = 0;
-    state.visitedPages.clear();
-    state.todoList = [];
-    state.actionLog = [];
+    // Only reset counters when starting a NEW mission.
+    // Follow-up messages during an active mission should not reset limits,
+    // otherwise the user could bypass safety limits by sending a second message.
+    if (!state.missionActive) {
+      loopCount = 0;
+      state.clickCount = 0;
+      state.navigationCount = 0;
+      state.scrollCount = 0;
+      state.typeCount = 0;
+      state.visitedPages.clear();
+      state.todoList = [];
+      state.actionLog = [];
+    }
+    loopCount = 0; // Always reset loop count for a new user turn
     state.lastUserMessage = message;
   }
 
@@ -386,10 +426,19 @@ async function sendMessageToAssistant(message, isUserInitiated = true) {
 
       await updateMissionContext();
     } else {
+      // Remove the orphan user message to prevent consecutive user messages
+      // which violate the Claude API alternation requirement
+      if (state.messages.length > 0 && state.messages[state.messages.length - 1].role === 'user') {
+        state.messages.pop();
+      }
       addErrorMessage(response?.error || 'Failed to get response');
     }
   } catch (error) {
     removeLoading(loadingId);
+    // Remove the orphan user message on error as well
+    if (state.messages.length > 0 && state.messages[state.messages.length - 1].role === 'user') {
+      state.messages.pop();
+    }
     addErrorMessage(error.message);
     console.error('[Sidepanel] Error:', error);
   }
@@ -419,11 +468,14 @@ async function updateMissionContext() {
       state.todoList = context.context.todoList;
       updateTodoUI(state.todoList);
     }
-  } catch (e) {}
+  } catch (e) {
+    console.warn('[Sidepanel] updateMissionContext failed:', e.message || e);
+  }
 }
 
 async function resetMission() {
   if (confirm('Reset the current mission?')) {
+    stopKeepAlive();
     await sendToBackground({ type: 'RESET_MISSION' }).catch(() => {});
 
     state.messages = [];
@@ -502,12 +554,75 @@ async function getPageContent(tabId) {
 }
 
 // ============================================================================
+// KEEPALIVE PORT - Prevents service worker termination during active missions
+// ============================================================================
+let keepAlivePort = null;
+let keepAliveReconnectTimer = null;
+
+function startKeepAlive() {
+  if (keepAlivePort) return;
+  try {
+    keepAlivePort = chrome.runtime.connect({ name: 'keepalive' });
+    keepAlivePort.onDisconnect.addListener(() => {
+      keepAlivePort = null;
+      // Reconnect if mission is still active or processing
+      if (state.missionActive || state.isProcessing) {
+        console.log('[Sidepanel] Keepalive lost during active mission, reconnecting...');
+        keepAliveReconnectTimer = setTimeout(startKeepAlive, 1000);
+      }
+    });
+    console.log('[Sidepanel] Keepalive port connected');
+  } catch (e) {
+    console.warn('[Sidepanel] Failed to establish keepalive:', e.message);
+    keepAlivePort = null;
+  }
+}
+
+function stopKeepAlive() {
+  if (keepAliveReconnectTimer) {
+    clearTimeout(keepAliveReconnectTimer);
+    keepAliveReconnectTimer = null;
+  }
+  if (keepAlivePort) {
+    try { keepAlivePort.disconnect(); } catch (e) {}
+    keepAlivePort = null;
+  }
+}
+
+// ============================================================================
 // UTILITIES
 // ============================================================================
-function sendToBackground(message) {
-  return new Promise((resolve) => {
-    chrome.runtime.sendMessage(message, (response) => {
-      resolve(response);
-    });
-  });
+async function sendToBackground(message) {
+  const MAX_SEND_RETRIES = 3;
+
+  for (let attempt = 1; attempt <= MAX_SEND_RETRIES; attempt++) {
+    try {
+      const response = await new Promise((resolve, reject) => {
+        try {
+          chrome.runtime.sendMessage(message, (response) => {
+            if (chrome.runtime.lastError) {
+              reject(new Error(chrome.runtime.lastError.message));
+            } else {
+              resolve(response);
+            }
+          });
+        } catch (error) {
+          reject(error);
+        }
+      });
+      return response;
+    } catch (error) {
+      console.warn(`[Sidepanel] sendToBackground attempt ${attempt}/${MAX_SEND_RETRIES} failed:`, error.message);
+
+      if (attempt < MAX_SEND_RETRIES) {
+        // Try to re-establish keepalive (wakes up service worker)
+        startKeepAlive();
+        await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+        continue;
+      }
+
+      // Final attempt failed - return error object to maintain backward compatibility
+      return { success: false, error: `Connection lost: ${error.message}` };
+    }
+  }
 }

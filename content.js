@@ -1,6 +1,11 @@
 // content.js - Content Script for Manureva AI Assistant
 // Handles DOM reading, clicking, scrolling, and visual feedback
 
+// Guard against double-injection (can happen if PING check fails due to timing)
+if (window.__manurevaContentScriptLoaded) {
+  console.log('[Manureva Content] Already loaded, skipping re-injection');
+} else {
+window.__manurevaContentScriptLoaded = true;
 console.log('[Manureva Content] Script loaded');
 
 // ============================================================================
@@ -491,11 +496,14 @@ function handleClick(message, sendResponse) {
     // Scroll into view
     element.scrollIntoView({ behavior: 'smooth', block: 'center' });
 
+    // Send response BEFORE the delayed click — if the click triggers a page
+    // navigation, the content script is destroyed and sendResponse would be lost.
+    const clickedText = element.textContent?.trim().substring(0, 50);
+    sendResponse({ success: true, clicked: clickedText });
+
     // Click after a small delay for visual effect
     setTimeout(() => {
-      // Use full event simulation for SPA compatibility
       simulateRealClick(element);
-      sendResponse({ success: true, clicked: element.textContent?.trim().substring(0, 50) });
     }, 300);
   } else {
     sendResponse({ success: false, error: `Element not found: ${selector || text}` });
@@ -532,10 +540,24 @@ function handleType(message, sendResponse) {
   
   if (input) {
     input.focus();
-    input.value = text;
+
+    // Use the native value setter to bypass React/Angular internal value tracking.
+    // Directly setting .value on framework-controlled inputs is silently ignored
+    // because frameworks override the setter. The native HTMLInputElement setter
+    // updates the actual DOM value, and the subsequent 'input' event triggers
+    // the framework's state update.
+    const prototype = input.tagName === 'TEXTAREA'
+      ? HTMLTextAreaElement.prototype
+      : HTMLInputElement.prototype;
+    const nativeSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+    if (nativeSetter) {
+      nativeSetter.call(input, text);
+    } else {
+      input.value = text;
+    }
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
-    
+
     showTypeFeedback(input);
     sendResponse({ success: true });
   } else {
@@ -644,3 +666,4 @@ function showTypeFeedback(element) {
 }
 
 console.log('[Manureva Content] Ready');
+} // end double-injection guard
