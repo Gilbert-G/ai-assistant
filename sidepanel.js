@@ -12,6 +12,7 @@ const state = {
   currentTabId: null,
   openTabs: new Map(),
   missionActive: false,
+  missionType: 'general',  // 'estimation', 'action', 'research', 'general'
   apiKeySet: false,
   originalContext: null,
   lastUserMessage: '',
@@ -349,14 +350,16 @@ async function sendMessageToAssistant(message, isUserInitiated = true) {
         content: pageContent
       };
 
-      await sendToBackground({
+      const goalResult = await sendToBackground({
         type: 'SET_PRIMARY_GOAL',
         goal: message,
         pageContext: pageContext
-      }).catch(() => {});
+      }).catch(() => ({}));
 
+      state.missionType = goalResult?.missionType || 'general';
       state.missionActive = true;
       updateMissionBanner(message);
+      console.log('[Sidepanel] Mission type:', state.missionType);
     }
 
     state.messages.push({ role: 'user', content: message });
@@ -425,6 +428,7 @@ async function resetMission() {
 
     state.messages = [];
     state.missionActive = false;
+    state.missionType = 'general';
     state.originalContext = null;
     state.storedJiraContext = null;
     state.openTabs.clear();

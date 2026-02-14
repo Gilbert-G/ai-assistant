@@ -262,17 +262,37 @@ function extractGenericContent() {
 // ============================================================================
 function extractKeyElements() {
   const elements = [];
-  
-  // Buttons
+
+  // Buttons — include aria-label and selector hints
   document.querySelectorAll('button, [role="button"], input[type="submit"]').forEach((el, i) => {
     if (i < 15 && el.offsetParent !== null) {
       const text = el.textContent.trim() || el.value || el.getAttribute('aria-label');
+      const ariaLabel = el.getAttribute('aria-label');
+      const id = el.id ? `#${el.id}` : '';
       if (text && text.length < 50) {
-        elements.push(`Button: "${text}"`);
+        let entry = `Button: "${text}"`;
+        if (ariaLabel && ariaLabel !== text) entry += ` [aria-label="${ariaLabel}"]`;
+        if (id) entry += ` [selector="${id}"]`;
+        elements.push(entry);
       }
     }
   });
-  
+
+  // Calendar/date cells — critical for date pickers
+  document.querySelectorAll('[role="gridcell"], [role="option"], td[data-date], [data-day]').forEach((el, i) => {
+    if (i < 20 && el.offsetParent !== null) {
+      const text = el.textContent.trim();
+      const ariaLabel = el.getAttribute('aria-label');
+      const dataDate = el.getAttribute('data-date') || el.getAttribute('data-day');
+      if (text && text.length < 50) {
+        let entry = `Cell: "${text}"`;
+        if (ariaLabel) entry += ` [aria-label="${ariaLabel}"]`;
+        if (dataDate) entry += ` [data-date="${dataDate}"]`;
+        elements.push(entry);
+      }
+    }
+  });
+
   // Links in navigation
   document.querySelectorAll('nav a, .menu a, #menu a, .nav a').forEach((el, i) => {
     if (i < 10 && el.offsetParent !== null) {
@@ -282,17 +302,32 @@ function extractKeyElements() {
       }
     }
   });
-  
-  // Input fields
-  document.querySelectorAll('input[type="text"], input[type="email"], textarea').forEach((el, i) => {
-    if (i < 5 && el.offsetParent !== null) {
+
+  // Input fields — include selector info
+  document.querySelectorAll('input[type="text"], input[type="search"], input[type="email"], input[type="number"], textarea').forEach((el, i) => {
+    if (i < 8 && el.offsetParent !== null) {
       const label = el.getAttribute('placeholder') || el.getAttribute('aria-label') || el.name;
+      const id = el.id ? `#${el.id}` : '';
+      const name = el.name ? `[name="${el.name}"]` : '';
       if (label) {
-        elements.push(`Input: "${label}"`);
+        let entry = `Input: "${label}"`;
+        if (id) entry += ` [selector="${id}"]`;
+        else if (name) entry += ` [selector="${name}"]`;
+        elements.push(entry);
       }
     }
   });
-  
+
+  // Select/dropdown elements
+  document.querySelectorAll('select').forEach((el, i) => {
+    if (i < 5 && el.offsetParent !== null) {
+      const label = el.getAttribute('aria-label') || el.name || el.id;
+      if (label) {
+        elements.push(`Select: "${label}" [options: ${el.options.length}]`);
+      }
+    }
+  });
+
   return elements;
 }
 
@@ -326,37 +361,95 @@ function extractNavigation() {
 // ============================================================================
 // ACTION HANDLERS
 // ============================================================================
+function isInViewport(el) {
+  const rect = el.getBoundingClientRect();
+  return (
+    rect.top >= 0 &&
+    rect.left >= 0 &&
+    rect.bottom <= (window.innerHeight || document.documentElement.clientHeight) &&
+    rect.right <= (window.innerWidth || document.documentElement.clientWidth) &&
+    rect.width > 0 &&
+    rect.height > 0
+  );
+}
+
+function isVisible(el) {
+  if (!el.offsetParent && el.tagName !== 'BODY') return false;
+  const style = window.getComputedStyle(el);
+  return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+}
+
 function handleClick(message, sendResponse) {
   const { selector, text, description } = message;
   let element = null;
-  
-  // Try selector first
+
+  // Try selector first (highest priority — most precise)
   if (selector) {
     element = document.querySelector(selector);
-  }
-  
-  // Try text content
-  if (!element && text) {
-    const allElements = document.querySelectorAll('button, a, [role="button"], input[type="submit"], [onclick]');
-    for (const el of allElements) {
-      if (el.textContent.trim().toLowerCase().includes(text.toLowerCase()) ||
-          el.value?.toLowerCase().includes(text.toLowerCase()) ||
-          el.getAttribute('aria-label')?.toLowerCase().includes(text.toLowerCase())) {
-        if (el.offsetParent !== null) { // Is visible
+    // If selector found an element but it's not visible, try broader
+    if (element && !isVisible(element)) {
+      const allBySelector = document.querySelectorAll(selector);
+      element = null;
+      for (const el of allBySelector) {
+        if (isVisible(el)) {
           element = el;
           break;
         }
       }
     }
   }
-  
+
+  // Try text content with improved matching
+  if (!element && text) {
+    // Broader element query — includes calendar cells, grid cells, list items, spans, divs with roles
+    const allElements = document.querySelectorAll(
+      'button, a, [role="button"], [role="gridcell"], [role="option"], [role="tab"], [role="menuitem"], ' +
+      'input[type="submit"], input[type="button"], [onclick], ' +
+      'td, th, li, span[tabindex], div[tabindex], label'
+    );
+
+    const textLower = text.toLowerCase().trim();
+    let exactMatch = null;       // text === search (best)
+    let exactInViewport = null;  // exact + in viewport (best of best)
+    let substringMatch = null;   // text contains search
+    let ariaMatch = null;        // aria-label match
+
+    for (const el of allElements) {
+      if (!isVisible(el)) continue;
+
+      const elText = el.textContent.trim().toLowerCase();
+      const elValue = el.value?.toLowerCase() || '';
+      const elAriaLabel = el.getAttribute('aria-label')?.toLowerCase() || '';
+
+      // Priority 1: Exact text match
+      if (elText === textLower || elValue === textLower) {
+        if (!exactMatch) exactMatch = el;
+        if (!exactInViewport && isInViewport(el)) exactInViewport = el;
+      }
+      // Priority 2: Exact aria-label match
+      else if (elAriaLabel === textLower || elAriaLabel.includes(textLower)) {
+        if (!ariaMatch) ariaMatch = el;
+      }
+      // Priority 3: Substring match (only if text is long enough to be unambiguous)
+      else if (textLower.length >= 3 && (elText.includes(textLower) || elValue.includes(textLower))) {
+        // Prefer shorter text (more specific match)
+        if (!substringMatch || elText.length < substringMatch.textContent.trim().length) {
+          substringMatch = el;
+        }
+      }
+    }
+
+    // Select best match: in-viewport exact > exact > aria > substring
+    element = exactInViewport || exactMatch || ariaMatch || substringMatch;
+  }
+
   if (element) {
     // Visual feedback
     showClickFeedback(element);
-    
+
     // Scroll into view
     element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    
+
     // Click after a small delay for visual effect
     setTimeout(() => {
       element.click();
