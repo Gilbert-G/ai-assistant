@@ -472,24 +472,33 @@ async function resetMission() {
 // ============================================================================
 async function getPageContent(tabId) {
   const targetTabId = tabId || state.currentTabId;
+  const MAX_RETRIES = 3;
 
-  try {
-    await sendToBackground({
-      type: 'INJECT_CONTENT_SCRIPT',
-      tabId: targetTabId
-    });
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      await sendToBackground({
+        type: 'INJECT_CONTENT_SCRIPT',
+        tabId: targetTabId
+      });
 
-    await new Promise(resolve => setTimeout(resolve, 300));
+      await new Promise(resolve => setTimeout(resolve, attempt === 1 ? 300 : 1000));
 
-    const response = await chrome.tabs.sendMessage(targetTabId, {
-      type: 'GET_PAGE_CONTENT'
-    });
+      const response = await chrome.tabs.sendMessage(targetTabId, {
+        type: 'GET_PAGE_CONTENT'
+      });
 
-    return response;
-  } catch (error) {
-    console.error('[Sidepanel] Failed to get page content:', error);
-    return null;
+      if (response) return response;
+    } catch (error) {
+      console.warn(`[Sidepanel] getPageContent attempt ${attempt}/${MAX_RETRIES} failed:`, error.message);
+      if (attempt < MAX_RETRIES) {
+        // Wait longer on each retry for the page to finish loading
+        await new Promise(resolve => setTimeout(resolve, 1500 * attempt));
+      }
+    }
   }
+
+  console.error('[Sidepanel] Failed to get page content after all retries');
+  return null;
 }
 
 // ============================================================================

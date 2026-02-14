@@ -379,6 +379,20 @@ function isVisible(el) {
   return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
 }
 
+function simulateRealClick(element) {
+  const rect = element.getBoundingClientRect();
+  const x = rect.left + rect.width / 2;
+  const y = rect.top + rect.height / 2;
+  const eventOpts = { bubbles: true, cancelable: true, clientX: x, clientY: y, view: window };
+
+  // Dispatch full pointer/mouse event sequence — required by React, Angular, and modern SPAs
+  element.dispatchEvent(new PointerEvent('pointerdown', eventOpts));
+  element.dispatchEvent(new MouseEvent('mousedown', eventOpts));
+  element.dispatchEvent(new PointerEvent('pointerup', eventOpts));
+  element.dispatchEvent(new MouseEvent('mouseup', eventOpts));
+  element.dispatchEvent(new MouseEvent('click', eventOpts));
+}
+
 function handleClick(message, sendResponse) {
   const { selector, text, description } = message;
   let element = null;
@@ -401,11 +415,14 @@ function handleClick(message, sendResponse) {
 
   // Try text content with improved matching
   if (!element && text) {
-    // Broader element query — includes calendar cells, grid cells, list items, spans, divs with roles
+    // Broad query covering interactive elements, SPA nav patterns, and framework components
     const allElements = document.querySelectorAll(
       'button, a, [role="button"], [role="gridcell"], [role="option"], [role="tab"], [role="menuitem"], ' +
-      'input[type="submit"], input[type="button"], [onclick], ' +
-      'td, th, li, span[tabindex], div[tabindex], label'
+      '[role="link"], [role="switch"], [role="checkbox"], [role="radio"], ' +
+      'input[type="submit"], input[type="button"], [onclick], [data-testid], ' +
+      'td, th, li, label, span, div[tabindex], span[tabindex], ' +
+      'nav a, nav button, nav span, nav div, ' +
+      '[class*="tab"], [class*="Tab"], [class*="nav-"], [class*="menu-"]'
     );
 
     const textLower = text.toLowerCase().trim();
@@ -413,6 +430,7 @@ function handleClick(message, sendResponse) {
     let exactInViewport = null;  // exact + in viewport (best of best)
     let substringMatch = null;   // text contains search
     let ariaMatch = null;        // aria-label match
+    let directTextMatch = null;  // element's own direct text (not children)
 
     for (const el of allElements) {
       if (!isVisible(el)) continue;
@@ -420,9 +438,16 @@ function handleClick(message, sendResponse) {
       const elText = el.textContent.trim().toLowerCase();
       const elValue = el.value?.toLowerCase() || '';
       const elAriaLabel = el.getAttribute('aria-label')?.toLowerCase() || '';
+      // Direct text: only the element's own text nodes (not descendants)
+      const directText = Array.from(el.childNodes)
+        .filter(n => n.nodeType === Node.TEXT_NODE)
+        .map(n => n.textContent.trim().toLowerCase())
+        .join(' ')
+        .trim();
 
       // Priority 1: Exact text match
-      if (elText === textLower || elValue === textLower) {
+      if (elText === textLower || elValue === textLower || directText === textLower) {
+        if (directText === textLower && !directTextMatch) directTextMatch = el;
         if (!exactMatch) exactMatch = el;
         if (!exactInViewport && isInViewport(el)) exactInViewport = el;
       }
@@ -439,8 +464,24 @@ function handleClick(message, sendResponse) {
       }
     }
 
-    // Select best match: in-viewport exact > exact > aria > substring
-    element = exactInViewport || exactMatch || ariaMatch || substringMatch;
+    // Select best match: in-viewport exact > direct text > exact > aria > substring
+    element = exactInViewport || directTextMatch || exactMatch || ariaMatch || substringMatch;
+
+    // Last resort: walk all visible elements in the DOM for a text match
+    if (!element) {
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT, {
+        acceptNode: (node) => {
+          if (!isVisible(node)) return NodeFilter.FILTER_SKIP;
+          const ownText = Array.from(node.childNodes)
+            .filter(n => n.nodeType === Node.TEXT_NODE)
+            .map(n => n.textContent.trim().toLowerCase())
+            .join(' ').trim();
+          if (ownText === textLower) return NodeFilter.FILTER_ACCEPT;
+          return NodeFilter.FILTER_SKIP;
+        }
+      });
+      element = walker.nextNode();
+    }
   }
 
   if (element) {
@@ -452,7 +493,8 @@ function handleClick(message, sendResponse) {
 
     // Click after a small delay for visual effect
     setTimeout(() => {
-      element.click();
+      // Use full event simulation for SPA compatibility
+      simulateRealClick(element);
       sendResponse({ success: true, clicked: element.textContent?.trim().substring(0, 50) });
     }, 300);
   } else {

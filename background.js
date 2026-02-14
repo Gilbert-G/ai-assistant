@@ -295,35 +295,59 @@ async function ensureApiKey() {
 }
 
 async function fetchClaudeAPI(systemPrompt, messages) {
-  const response = await fetch(CONFIG.CLAUDE_API_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true'
-    },
-    body: JSON.stringify({
-      model: CONFIG.MODEL,
-      max_tokens: CONFIG.MAX_TOKENS,
-      system: systemPrompt,
-      messages: messages
-    })
-  });
+  const MAX_RETRIES = 3;
+  const BACKOFF_BASE = 2000; // 2s, 4s, 8s
 
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(`API error: ${response.status} - ${errorData.error?.message || 'Unknown'}`);
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const response = await fetch(CONFIG.CLAUDE_API_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        body: JSON.stringify({
+          model: CONFIG.MODEL,
+          max_tokens: CONFIG.MAX_TOKENS,
+          system: systemPrompt,
+          messages: messages
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        const status = response.status;
+        // Retry on 429 (rate limit) and 5xx (server errors), not on 4xx client errors
+        if ((status === 429 || status >= 500) && attempt < MAX_RETRIES) {
+          const delay = BACKOFF_BASE * Math.pow(2, attempt - 1);
+          console.warn(`[Background] API error ${status}, retrying in ${delay}ms (attempt ${attempt}/${MAX_RETRIES})`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
+        }
+        throw new Error(`API error: ${status} - ${errorData.error?.message || 'Unknown'}`);
+      }
+
+      const data = await response.json();
+
+      return {
+        success: true,
+        content: data.content.filter(b => b.type === 'text').map(b => b.text).join('\n'),
+        usage: data.usage,
+        stopReason: data.stop_reason
+      };
+    } catch (error) {
+      // Retry on network errors (Failed to fetch), not on JSON parse / logic errors
+      if (error.message === 'Failed to fetch' && attempt < MAX_RETRIES) {
+        const delay = BACKOFF_BASE * Math.pow(2, attempt - 1);
+        console.warn(`[Background] Fetch failed, retrying in ${delay}ms (attempt ${attempt}/${MAX_RETRIES})`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+      throw error;
+    }
   }
-
-  const data = await response.json();
-
-  return {
-    success: true,
-    content: data.content.filter(b => b.type === 'text').map(b => b.text).join('\n'),
-    usage: data.usage,
-    stopReason: data.stop_reason
-  };
 }
 
 function buildSystemPrompt() {
