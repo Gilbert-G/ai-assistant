@@ -160,9 +160,10 @@ async function parseAndExecuteActions(content, userMessage = '') {
           addSystemNotice(`\u2705 Opened: ${result.title || targetUrl}`);
           logAction('navigate', targetUrl, 'success');
 
-          // Wait for page and inject content script
-          await new Promise(resolve => setTimeout(resolve, 1500));
+          // Wait for page to fully render (SPAs need extra time) then inject content script
+          await new Promise(resolve => setTimeout(resolve, 3000));
           await sendToBackground({ type: 'INJECT_CONTENT_SCRIPT', tabId: result.tabId });
+          await new Promise(resolve => setTimeout(resolve, 500));
         } else {
           addSystemNotice(`\u274C Navigation failed`);
           logAction('navigate', targetUrl, 'failed');
@@ -275,7 +276,7 @@ async function parseAndExecuteActions(content, userMessage = '') {
     console.log(`[Sidepanel] \u{1F504} AUTO-CONTINUING (iteration ${loopCount}/${MAX_LOOP_ITERATIONS})...`);
     addSystemNotice(`\u{1F504} Step ${loopCount}/${MAX_LOOP_ITERATIONS}`);
 
-    await new Promise(resolve => setTimeout(resolve, 1500));
+    await new Promise(resolve => setTimeout(resolve, 2500));
     const continueMessage = await buildContinuationMessage();
     await sendMessageToAssistant(continueMessage, false);
   }
@@ -337,7 +338,7 @@ async function executeDomAction(action) {
       const urlBefore = (await sendToBackground({ type: 'GET_TAB_INFO', tabId: state.currentTabId }))?.url;
 
       try {
-        const clickResult = await sendToBackground({
+        let clickResult = await sendToBackground({
           type: 'EXECUTE_IN_TAB',
           tabId: state.currentTabId,
           action: {
@@ -347,6 +348,26 @@ async function executeDomAction(action) {
             description: action.description
           }
         });
+
+        // Retry once on failure — page may still be loading / rendering
+        if (!clickResult?.success) {
+          console.log('[ActionExecutor] Click failed, retrying after 2s...');
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          // Re-inject content script in case it was lost
+          await sendToBackground({ type: 'INJECT_CONTENT_SCRIPT', tabId: state.currentTabId });
+          await new Promise(resolve => setTimeout(resolve, 500));
+
+          clickResult = await sendToBackground({
+            type: 'EXECUTE_IN_TAB',
+            tabId: state.currentTabId,
+            action: {
+              type: 'CLICK',
+              selector: action.selector,
+              text: action.text,
+              description: action.description
+            }
+          });
+        }
 
         result.executed = true;
 
