@@ -273,6 +273,7 @@ const INTERACTIVE_SELECTOR = [
   'a[href]',
   'button', '[role="button"]',
   'input:not([type="hidden"])', 'textarea', 'select',
+  'select option',
   '[role="link"]', '[role="menuitem"]', '[role="menuitemcheckbox"]', '[role="menuitemradio"]',
   '[role="option"]', '[role="tab"]', '[role="treeitem"]',
   '[role="switch"]', '[role="checkbox"]', '[role="radio"]',
@@ -281,7 +282,9 @@ const INTERACTIVE_SELECTOR = [
   '[contenteditable="true"]', '[contenteditable=""]',
   'summary',
   'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
-  'img[alt]', '[role="img"][aria-label]'
+  'img[alt]', '[role="img"][aria-label]',
+  '[role="alert"]', '[role="status"]',
+  'dialog[open]', '[role="dialog"]', '[role="alertdialog"]'
 ].join(', ');
 
 function inferRole(el) {
@@ -304,7 +307,9 @@ function inferRole(el) {
     }
     case 'textarea': return 'textbox';
     case 'select': return 'combobox';
+    case 'option': return 'option';
     case 'img': return 'img';
+    case 'dialog': return 'dialog';
     case 'h1': case 'h2': case 'h3': case 'h4': case 'h5': case 'h6': return 'heading';
     default:
       if (el.hasAttribute('contenteditable') && el.getAttribute('contenteditable') !== 'false') return 'textbox';
@@ -371,7 +376,8 @@ function describeElement(el) {
 
   // Require a name for elements that are meaningless without one
   const needsName = ['link', 'button', 'menuitem', 'menuitemcheckbox', 'menuitemradio',
-                     'option', 'tab', 'treeitem', 'heading', 'img', 'gridcell'];
+                     'option', 'tab', 'treeitem', 'heading', 'img', 'gridcell',
+                     'alert', 'status', 'dialog', 'alertdialog'];
   if (needsName.includes(role) && !name) return null;
 
   const tag = el.tagName.toLowerCase();
@@ -409,26 +415,123 @@ function describeElement(el) {
   return desc;
 }
 
+// Detect active overlays, dialogs, cookie banners, and modals that block the page
+function detectActiveOverlay() {
+  // 1. Native <dialog open>
+  const openDialog = document.querySelector('dialog[open]');
+  if (openDialog) return openDialog;
+
+  // 2. ARIA dialogs
+  const ariaDialog = document.querySelector('[role="dialog"]:not([aria-hidden="true"]), [role="alertdialog"]:not([aria-hidden="true"])');
+  if (ariaDialog && isVisible(ariaDialog)) return ariaDialog;
+
+  // 3. Common modal/overlay CSS patterns
+  const overlaySelectors = [
+    '.modal.show', '.modal.in', '.modal.is-open', '.modal.is-active',
+    '.overlay.active', '.overlay.visible',
+    '[class*="cookie-banner"]', '[class*="cookie-consent"]',
+    '[class*="consent-banner"]', '[class*="consent-modal"]',
+    '[id*="cookie-banner"]', '[id*="cookie-consent"]',
+    '[id*="consent-banner"]', '[id*="consent-modal"]',
+    '[id*="gdpr"]', '[class*="gdpr"]',
+    '[class*="CookieConsent"]', '[id*="CookieConsent"]',
+    '[class*="onetrust"]', '[id*="onetrust"]',
+    '[class*="cc-banner"]', '[class*="cc-window"]'
+  ];
+
+  for (const sel of overlaySelectors) {
+    try {
+      const el = document.querySelector(sel);
+      if (el && isVisible(el)) return el;
+    } catch (e) {} // ignore invalid selectors
+  }
+
+  // 4. Full-screen fixed/sticky elements with high z-index (generic modal detection)
+  const topLevelDivs = document.querySelectorAll('body > div, body > aside, body > section');
+  for (const el of topLevelDivs) {
+    try {
+      const style = getComputedStyle(el);
+      if ((style.position === 'fixed' || style.position === 'sticky') &&
+          style.display !== 'none' &&
+          style.visibility !== 'hidden' &&
+          parseFloat(style.opacity) > 0 &&
+          parseInt(style.zIndex) > 100 &&
+          el.offsetHeight > 80 &&
+          el.offsetWidth > 200) {
+        // Check it contains at least one interactive element (not just a floating header/nav)
+        if (el.querySelector('button, a, [role="button"], input')) {
+          return el;
+        }
+      }
+    } catch (e) {}
+  }
+
+  return null;
+}
+
 function buildElementMap() {
   window.__manurevaElements = [];
   const entries = [];
   let idx = 0;
   const MAX_ELEMENTS = 200;
 
+  const overlay = detectActiveOverlay();
   const candidates = document.querySelectorAll(INTERACTIVE_SELECTOR);
-  for (const el of candidates) {
-    if (idx >= MAX_ELEMENTS) break;
-    if (!isVisible(el)) continue;
 
-    const info = describeElement(el);
-    if (!info) continue;
+  if (overlay) {
+    // When an overlay is detected, show overlay elements FIRST with a clear annotation
+    entries.push('--- OVERLAY/DIALOG DETECTED (dismiss this first) ---');
 
-    window.__manurevaElements[idx] = el;
-    entries.push('[' + idx + '] ' + info);
-    idx++;
+    for (const el of candidates) {
+      if (idx >= MAX_ELEMENTS) break;
+      if (!overlay.contains(el)) continue;
+      if (!isVisibleForMap(el)) continue;
+
+      const info = describeElement(el);
+      if (!info) continue;
+
+      window.__manurevaElements[idx] = el;
+      entries.push('[' + idx + '] ' + info);
+      idx++;
+    }
+
+    entries.push('--- PAGE ELEMENTS (behind overlay) ---');
+
+    for (const el of candidates) {
+      if (idx >= MAX_ELEMENTS) break;
+      if (overlay.contains(el)) continue;
+      if (!isVisibleForMap(el)) continue;
+
+      const info = describeElement(el);
+      if (!info) continue;
+
+      window.__manurevaElements[idx] = el;
+      entries.push('[' + idx + '] ' + info);
+      idx++;
+    }
+  } else {
+    for (const el of candidates) {
+      if (idx >= MAX_ELEMENTS) break;
+      if (!isVisibleForMap(el)) continue;
+
+      const info = describeElement(el);
+      if (!info) continue;
+
+      window.__manurevaElements[idx] = el;
+      entries.push('[' + idx + '] ' + info);
+      idx++;
+    }
   }
 
   return entries;
+}
+
+// Slightly relaxed visibility check for element map building.
+// Native <option> inside <select> is always "visible" for map purposes
+// even though offsetParent may be null.
+function isVisibleForMap(el) {
+  if (el.tagName === 'OPTION') return true;
+  return isVisible(el);
 }
 
 // ============================================================================
@@ -504,9 +607,23 @@ function handleClick(message, sendResponse) {
   // Priority 0: Index-based lookup (from element map — most reliable)
   if (index !== undefined && index !== null && window.__manurevaElements) {
     const idx = parseInt(index);
-    if (window.__manurevaElements[idx] && isVisible(window.__manurevaElements[idx])) {
-      element = window.__manurevaElements[idx];
+    const candidate = window.__manurevaElements[idx];
+    // Verify the element is still in the DOM and visible (guards against stale references)
+    if (candidate && document.body.contains(candidate) &&
+        (candidate.tagName === 'OPTION' || isVisible(candidate))) {
+      element = candidate;
     }
+  }
+
+  // Special handling: clicking an <option> inside a <select> sets the value directly
+  if (element && element.tagName === 'OPTION' && element.parentElement?.tagName === 'SELECT') {
+    const select = element.parentElement;
+    select.value = element.value;
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    select.dispatchEvent(new Event('input', { bubbles: true }));
+    showClickFeedback(select);
+    sendResponse({ success: true, method: 'select-option' });
+    return;
   }
 
   // Try selector (fallback)
@@ -661,8 +778,10 @@ function handleType(message, sendResponse) {
   // Priority 0: Index-based lookup (from element map)
   if (index !== undefined && index !== null && window.__manurevaElements) {
     const idx = parseInt(index);
-    if (window.__manurevaElements[idx] && isVisible(window.__manurevaElements[idx])) {
-      input = window.__manurevaElements[idx];
+    const candidate = window.__manurevaElements[idx];
+    // Verify element is still in DOM and visible (guards against stale references)
+    if (candidate && document.body.contains(candidate) && isVisible(candidate)) {
+      input = candidate;
     }
   }
 
@@ -758,36 +877,52 @@ function handleType(message, sendResponse) {
 }
 
 function handlePressKey(message, sendResponse) {
-  const { key } = message;
-  
+  const { key, ctrl, shift, alt, meta } = message;
+
   const keyMap = {
     'Return': 'Enter',
     'Enter': 'Enter',
     'Escape': 'Escape',
     'Tab': 'Tab',
-    'Backspace': 'Backspace'
+    'Backspace': 'Backspace',
+    'Delete': 'Delete',
+    'ArrowUp': 'ArrowUp',
+    'ArrowDown': 'ArrowDown',
+    'ArrowLeft': 'ArrowLeft',
+    'ArrowRight': 'ArrowRight',
+    'Home': 'Home',
+    'End': 'End',
+    'PageUp': 'PageUp',
+    'PageDown': 'PageDown',
+    'Space': ' '
   };
-  
+
   const keyCode = keyMap[key] || key;
-  
-  const event = new KeyboardEvent('keydown', {
+  const modifiers = {
+    ctrlKey: ctrl === 'true' || ctrl === true,
+    shiftKey: shift === 'true' || shift === true,
+    altKey: alt === 'true' || alt === true,
+    metaKey: meta === 'true' || meta === true
+  };
+
+  const target = document.activeElement || document.body;
+
+  target.dispatchEvent(new KeyboardEvent('keydown', {
     key: keyCode,
     code: keyCode,
     bubbles: true,
-    cancelable: true
-  });
-  
-  document.activeElement.dispatchEvent(event);
-  
-  // Also trigger keyup
-  const keyUpEvent = new KeyboardEvent('keyup', {
+    cancelable: true,
+    ...modifiers
+  }));
+
+  target.dispatchEvent(new KeyboardEvent('keyup', {
     key: keyCode,
     code: keyCode,
     bubbles: true,
-    cancelable: true
-  });
-  document.activeElement.dispatchEvent(keyUpEvent);
-  
+    cancelable: true,
+    ...modifiers
+  }));
+
   sendResponse({ success: true });
 }
 

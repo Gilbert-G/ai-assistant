@@ -33,11 +33,11 @@ const state = {
 
 // Agentic loop tracking
 let loopCount = 0;
-const MAX_LOOP_ITERATIONS = 25;
-const MAX_CLICKS_PER_MISSION = 20;
-const MAX_NAVIGATIONS_PER_MISSION = 12;
-const MAX_SCROLLS_PER_MISSION = 30;
-const MAX_TYPES_PER_MISSION = 15;
+const MAX_LOOP_ITERATIONS = 40;
+const MAX_CLICKS_PER_MISSION = 50;
+const MAX_NAVIGATIONS_PER_MISSION = 20;
+const MAX_SCROLLS_PER_MISSION = 50;
+const MAX_TYPES_PER_MISSION = 30;
 
 // Message history limit to prevent unbounded growth
 const MAX_MESSAGE_HISTORY = 20;
@@ -506,12 +506,12 @@ async function resetMission() {
           </svg>
         </div>
         <h2>Welcome to Manureva AI Assistant</h2>
-        <p>I'm your intelligent browser automation assistant. I can help you:</p>
+        <p>I'm your intelligent browser automation assistant. I can navigate and interact with any website:</p>
         <ul>
-          <li>Navigate to Jira tickets and analyze issues</li>
-          <li>Deep-dive into WordPress/Divi admin panels</li>
-          <li>Execute multi-step workflows across platforms</li>
-          <li>Provide accurate time estimates</li>
+          <li>Fill forms, book flights, manage accounts on any site</li>
+          <li>Navigate complex web apps (SPAs, dashboards, admin panels)</li>
+          <li>Handle pop-ups, cookie banners, and multi-step workflows</li>
+          <li>Research, compare, and report findings across the web</li>
         </ul>
         <p class="hint">Tell me what you'd like to accomplish!</p>
       </div>

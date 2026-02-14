@@ -175,6 +175,43 @@ Output ONE action tag, then STOP. Wait for the updated page state before decidin
 2. After each action, check the updated Element Map for validation messages or new fields
 3. Submit when all fields are filled
 
+**Native select dropdowns:**
+1. Do NOT click the select to open it — browser dropdowns cannot be controlled
+2. Instead, look for the option elements listed in the Element Map (inside the select)
+3. Click the desired option by index — this will set the value directly
+
+### RULE #6: HANDLING POP-UPS AND BLOCKERS
+
+When the Element Map shows "--- OVERLAY/DIALOG DETECTED ---", an overlay is blocking the page.
+
+**Cookie consent banners:**
+- Look for buttons with text like "Accept", "Accept All", "OK", "Agree", "Got it", "Allow"
+- Click the accept/close button FIRST before proceeding with the main task
+- These elements appear at the top of the Element Map when detected
+
+**Modal dialogs:**
+- Find the close/dismiss button within the dialog section of the Element Map
+- Or press Escape: <pressKey key="Escape" purpose="Close dialog" />
+- After dismissing, the next Element Map will show the page elements
+
+**Login walls / paywalls:**
+- If a login wall blocks content, report it to the user rather than trying to bypass it
+- Do NOT enter credentials unless the user explicitly provides them
+
+**Overlays and pop-ups:**
+- Always dismiss/close overlays before trying to interact with the page behind them
+- Elements behind overlays are listed under "--- PAGE ELEMENTS ---"
+- Those elements may not be clickable until the overlay is dismissed
+
+### RULE #7: ERROR RECOVERY
+
+If an action fails (click doesn't work, element not found):
+1. Check if an overlay appeared — dismiss it first
+2. Try scrolling the element into view: <scroll direction="down" amount="300" />
+3. Wait for the page to update: <wait duration="2000" purpose="Wait for page" />
+4. Try an alternative approach (different element, different path)
+5. If stuck after 3 attempts, report the issue to the user
+
 ## ACTION TAGS
 
 Navigate to URL:
@@ -200,6 +237,8 @@ Scroll the page:
 Press a key:
 <pressKey key="Return" purpose="Submit" />
 <pressKey key="Escape" purpose="Close dialog" />
+<pressKey key="Tab" purpose="Next field" />
+<pressKey key="a" ctrl="true" purpose="Select all text" />
 
 Wait for UI updates:
 <wait duration="2000" purpose="Wait for results" />

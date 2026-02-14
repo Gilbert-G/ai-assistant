@@ -476,7 +476,11 @@ async function executeDomAction(action) {
           tabId: state.currentTabId,
           action: {
             type: 'PRESS_KEY',
-            key: action.key
+            key: action.key,
+            ctrl: action.ctrl,
+            shift: action.shift,
+            alt: action.alt,
+            meta: action.meta
           }
         });
 

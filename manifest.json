@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Manureva AI Assistant",
   "version": "4.0.0",
-  "description": "AI-powered browser automation assistant for Jira ticket estimation and multi-step workflows",
+  "description": "AI-powered universal browser automation agent — navigates and interacts with any website",
   "permissions": [
     "activeTab",
     "tabs",
