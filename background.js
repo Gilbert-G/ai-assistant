@@ -19,6 +19,7 @@ let apiKey = null;
 
 const missionState = {
   primaryGoal: null,
+  missionType: 'general',  // 'estimation', 'action', 'research', 'general'
   primaryTabId: null,
   primaryTabInfo: null,
   pageContext: null,
@@ -27,30 +28,59 @@ const missionState = {
   totalSteps: 5,
   progress: '0/5',
   tabData: new Map(),
-  todoList: [],  // NEW: Track to-do items
-  completedActions: []  // NEW: Track what's been done
+  todoList: [],
+  completedActions: []
 };
 
 const tabRegistry = new Map();
 
 // ============================================================================
-// SYSTEM PROMPT - Simple and Direct
+// MISSION TYPE DETECTION
 // ============================================================================
-const SYSTEM_PROMPT = `You are Manureva AI Assistant. You analyze websites and provide time estimates for Jira tickets.
+function detectMissionType(goal) {
+  if (!goal) return 'general';
+  const g = goal.toLowerCase();
 
-## RULE #1: YOU ALREADY HAVE THE JIRA TICKET
-Look at the "STORED JIRA TICKET" section below. That IS the ticket you're estimating.
-NEVER ask "what ticket?" or "what needs to be estimated?" - YOU HAVE IT.
-Always say "Based on ticket [KEY]..." to show you remember it.
+  // Estimation keywords
+  if (/\b(estimate|estimation|how long|time estimate|story points?|size this|assess complexity)\b/.test(g)) {
+    return 'estimation';
+  }
+  // Action/execution keywords
+  if (/\b(book|buy|purchase|sign up|register|fill|submit|order|checkout|download|install|configure|set up|create|delete|send|post|upload|apply|reserve)\b/.test(g)) {
+    return 'action';
+  }
+  // Research keywords
+  if (/\b(find|search|look up|what is|how does|explain|compare|list|show me|check if|tell me about|research)\b/.test(g)) {
+    return 'research';
+  }
+  return 'general';
+}
 
-## RULE #2: KEEP EXPLORING UNTIL DONE
-After each action, you'll get new page content. Keep going:
-1. Navigate to site → read what you see → scroll/click to explore
-2. Find the relevant elements mentioned in the ticket
-3. When you understand the scope, provide your estimate
+// ============================================================================
+// SYSTEM PROMPTS - Mission-Adaptive
+// ============================================================================
+const BASE_PROMPT = `You are Manureva AI Assistant, an autonomous browser automation agent. You can navigate websites, click buttons, scroll, type, and analyze content to accomplish tasks for the user.
 
-## RULE #3: ONE ACTION PER RESPONSE
-Output ONE action, then STOP. Wait for the result.
+## CORE RULES
+
+### RULE #1: STAY TRUE TO THE MISSION
+Your job is to accomplish EXACTLY what the user asked for. Read the PRIMARY GOAL below carefully and execute it faithfully. Do NOT deviate to a different task type.
+
+### RULE #2: KEEP GOING UNTIL DONE
+After each action, you'll get updated page content. Keep taking actions until the mission is complete:
+1. Navigate to sites → read what you see → interact as needed
+2. Use the page content provided to decide your next action
+3. Only stop when the user's actual goal is fully accomplished
+
+### RULE #3: ONE ACTION PER RESPONSE
+Output ONE action tag, then STOP. Wait for the result before deciding the next step.
+
+### RULE #4: BE PRECISE WITH INTERACTIONS
+- For clicking: ALWAYS prefer CSS selectors over text matching when elements have data attributes, IDs, or unique classes
+- For calendar/date pickers: Use selectors like [data-date="2026-04-20"], [aria-label="April 20"], or button[data-day="20"] instead of just the number text
+- For form fields: Use the input's ID, name, or aria-label as the selector
+- When text is ambiguous (short text like "5", "20", single words), use a CSS selector instead
+- Example: <click selector="[aria-label='Saturday, April 20, 2026']" description="Select April 20" /> is better than <click text="20" />
 
 ## ACTION TAGS
 
@@ -61,21 +91,44 @@ Scroll the page:
 <scroll direction="down" amount="500" purpose="See footer" />
 <scroll to="bottom" purpose="View full page" />
 
-Click something:
+Click something (prefer selector for precision):
+<click selector="#submit-btn" description="Submit form" />
+<click selector="[aria-label='April 20']" description="Select date" />
 <click text="Appearance" description="Open menu" />
-<click selector=".my-class" description="Click element" />
 
 Type text:
-<type selector="#field" text="1h" purpose="Enter estimate" />
+<type selector="#search-input" text="search query" purpose="Enter search" />
 
 Press a key:
 <pressKey key="Return" purpose="Submit" />
 
 Store a finding:
-<storeContext key="location" value="Footer section" />
+<storeContext key="price" value="$450 round trip" />
 
-## ESTIMATE FORMAT
+Switch browser tab:
+<switchTab platform="jira" />
 
+Create a to-do list:
+<todo action="create">
+- Step 1 description
+- Step 2 description
+</todo>
+
+Update to-do status:
+<todo action="update" item="1" status="done" />`;
+
+const ESTIMATION_PROMPT_ADDON = `
+
+## MISSION TYPE: ESTIMATION
+You are estimating a Jira ticket. Your goal is to explore the relevant systems and provide a time estimate.
+
+### ESTIMATION RULES
+- You ALREADY HAVE the Jira ticket — check the "STORED JIRA TICKET" section below
+- NEVER ask "what ticket?" or "what needs to be estimated?" — USE the stored ticket info
+- Reference the ticket key in your responses: "Based on ticket [KEY]..."
+- Keep exploring until you can provide an informed estimate
+
+### ESTIMATE FORMAT
 When ready, provide:
 
 **Estimate for [TICKET-KEY]: [Summary]**
@@ -90,13 +143,37 @@ When ready, provide:
 - Buffer: X min
 - **Total: X hour(s)**
 
-**Complexity:** Low/Medium/High
+**Complexity:** Low/Medium/High`;
 
-## REMEMBER
-- You HAVE the Jira ticket - check "STORED JIRA TICKET" section
-- Keep exploring until you can estimate
-- One action per response
-- Reference the ticket key in your responses`;
+const ACTION_PROMPT_ADDON = `
+
+## MISSION TYPE: ACTION/EXECUTION
+You are performing a real task on behalf of the user. Your goal is to COMPLETE the task, not estimate it.
+
+### ACTION RULES
+- EXECUTE the task step by step — do NOT provide time estimates or assessments
+- Focus on actually accomplishing what the user asked (booking, purchasing, filling forms, etc.)
+- Verify each step succeeded before moving to the next
+- If you encounter errors or unexpected states, try alternative approaches
+- Report what you accomplished, not how long it would take
+- When the task is fully done, say "✅ Task Complete" and summarize what was accomplished`;
+
+const RESEARCH_PROMPT_ADDON = `
+
+## MISSION TYPE: RESEARCH/INVESTIGATION
+You are researching information for the user. Your goal is to find and report accurate information.
+
+### RESEARCH RULES
+- Navigate to relevant sources and extract the information requested
+- Verify facts across multiple sources when possible
+- Report findings clearly and concisely
+- When you have a comprehensive answer, present it and say "✅ Research Complete"`;
+
+const GENERAL_PROMPT_ADDON = `
+
+## MISSION TYPE: GENERAL
+Follow the user's instructions precisely. Complete whatever task they've described.
+When the task is done, say "✅ Task Complete" and summarize what was accomplished.`;
 
 
 // ============================================================================
@@ -249,24 +326,50 @@ async function fetchClaudeAPI(systemPrompt, messages) {
   };
 }
 
+function buildSystemPrompt() {
+  let prompt = BASE_PROMPT;
+
+  // Append mission-specific addon
+  switch (missionState.missionType) {
+    case 'estimation':
+      prompt += ESTIMATION_PROMPT_ADDON;
+      break;
+    case 'action':
+      prompt += ACTION_PROMPT_ADDON;
+      break;
+    case 'research':
+      prompt += RESEARCH_PROMPT_ADDON;
+      break;
+    default:
+      prompt += GENERAL_PROMPT_ADDON;
+      break;
+  }
+
+  return prompt;
+}
+
 async function callClaudeAPI(payload) {
   await ensureApiKey();
   const { messages, systemPrompt } = payload;
-  return await fetchClaudeAPI(systemPrompt || SYSTEM_PROMPT, messages);
+  return await fetchClaudeAPI(systemPrompt || buildSystemPrompt(), messages);
 }
 
 async function callClaudeAPIWithContext(payload) {
   await ensureApiKey();
   const { messages, pageContext } = payload;
 
-  // Build contextual system prompt
-  let contextualPrompt = SYSTEM_PROMPT;
-  
-  // ⚠️ ADD JIRA CONTEXT FIRST - MOST IMPORTANT - BEFORE ANYTHING ELSE
+  // Build mission-adaptive system prompt
+  let contextualPrompt = buildSystemPrompt();
+
+  // Add Jira context ONLY for estimation missions (or if context exists and is relevant)
   if (pageContext?.storedJiraContext) {
     const jira = pageContext.storedJiraContext;
-    contextualPrompt += `\n\n## ⚠️⚠️⚠️ STORED JIRA TICKET - YOU ALREADY HAVE THIS - DO NOT ASK FOR IT ⚠️⚠️⚠️`;
-    contextualPrompt += `\n\n**THIS IS THE TICKET YOU ARE ESTIMATING:**`;
+    if (missionState.missionType === 'estimation') {
+      contextualPrompt += `\n\n## ⚠️⚠️⚠️ STORED JIRA TICKET - YOU ALREADY HAVE THIS - DO NOT ASK FOR IT ⚠️⚠️⚠️`;
+      contextualPrompt += `\n\n**THIS IS THE TICKET YOU ARE ESTIMATING:**`;
+    } else {
+      contextualPrompt += `\n\n## STORED JIRA TICKET (for reference)`;
+    }
     if (jira.ticketInfo) {
       if (jira.ticketInfo.key) contextualPrompt += `\n- **Ticket Key:** ${jira.ticketInfo.key}`;
       if (jira.ticketInfo.summary) contextualPrompt += `\n- **Task:** ${jira.ticketInfo.summary}`;
@@ -280,10 +383,12 @@ async function callClaudeAPIWithContext(payload) {
     if (jira.relatedLinks?.length > 0) {
       contextualPrompt += `\n- **Related URLs in ticket:** ${jira.relatedLinks.map(l => l.url).join(', ')}`;
     }
-    contextualPrompt += `\n\n**⚠️ NEVER ask "what ticket?" or "what needs to be estimated?" - USE THE INFO ABOVE.**`;
-    contextualPrompt += `\n**Reference this ticket in your analysis: "Based on ${jira.ticketInfo?.key || 'the ticket'}..."**`;
+    if (missionState.missionType === 'estimation') {
+      contextualPrompt += `\n\n**⚠️ NEVER ask "what ticket?" or "what needs to be estimated?" - USE THE INFO ABOVE.**`;
+      contextualPrompt += `\n**Reference this ticket in your analysis: "Based on ${jira.ticketInfo?.key || 'the ticket'}..."**`;
+    }
   }
-  
+
   // Add current page context
   if (pageContext) {
     contextualPrompt += `\n\n## CURRENT SESSION CONTEXT
@@ -297,7 +402,7 @@ async function callClaudeAPIWithContext(payload) {
       contextualPrompt += `\n- **Summary:** ${pageContext.summary}`;
     }
   }
-  
+
   // Add to-do list if exists
   if (missionState.todoList.length > 0) {
     contextualPrompt += `\n\n### TO-DO LIST STATUS`;
@@ -306,7 +411,7 @@ async function callClaudeAPIWithContext(payload) {
       contextualPrompt += `\n${statusIcon} ${i + 1}. ${item.text}`;
     });
   }
-  
+
   // Add stored findings
   if (missionState.criticalFindings.length > 0) {
     contextualPrompt += `\n\n### STORED FINDINGS`;
@@ -314,7 +419,7 @@ async function callClaudeAPIWithContext(payload) {
       contextualPrompt += `\n- ${f}`;
     });
   }
-  
+
   // Add recent action log
   if (missionState.completedActions.length > 0) {
     const recentActions = missionState.completedActions.slice(-10);
@@ -323,13 +428,14 @@ async function callClaudeAPIWithContext(payload) {
       contextualPrompt += `\n- ${a.action}: ${a.result || 'completed'}`;
     });
   }
-  
+
   // Add primary goal
   if (missionState.primaryGoal) {
     contextualPrompt += `\n\n### PRIMARY GOAL\n${missionState.primaryGoal}`;
   }
-  
+
   console.log('[Background] API call with context:', {
+    missionType: missionState.missionType,
     platform: pageContext?.platform,
     findings: missionState.criticalFindings.length,
     todoItems: missionState.todoList.length,
@@ -602,20 +708,23 @@ function setPrimaryTab(tabId, url, title) {
 
 function setPrimaryGoal(goal, pageContext) {
   missionState.primaryGoal = goal;
+  missionState.missionType = detectMissionType(goal);
   missionState.pageContext = pageContext;
   missionState.currentStep = 1;
   missionState.progress = '1/5';
   missionState.criticalFindings = [];
   missionState.todoList = [];
   missionState.completedActions = [];
-  
-  return { success: true };
+
+  console.log('[Background] Mission type detected:', missionState.missionType, 'for goal:', goal.substring(0, 80));
+  return { success: true, missionType: missionState.missionType };
 }
 
 function getMissionContext() {
   return {
     context: {
       primaryGoal: missionState.primaryGoal,
+      missionType: missionState.missionType,
       primaryTabId: missionState.primaryTabId,
       primaryTabInfo: missionState.primaryTabInfo,
       criticalFindings: missionState.criticalFindings,
@@ -628,6 +737,7 @@ function getMissionContext() {
 
 function resetMission() {
   missionState.primaryGoal = null;
+  missionState.missionType = 'general';
   missionState.primaryTabId = null;
   missionState.primaryTabInfo = null;
   missionState.pageContext = null;
@@ -638,7 +748,7 @@ function resetMission() {
   missionState.todoList = [];
   missionState.completedActions = [];
   tabRegistry.clear();
-  
+
   return { success: true };
 }
 

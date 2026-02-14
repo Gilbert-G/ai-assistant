@@ -49,22 +49,32 @@ async function parseAndExecuteActions(content, userMessage = '') {
   });
 
   // ==========================================================================
-  // STEP 0: CHECK FOR COMPLETION
+  // STEP 0: CHECK FOR COMPLETION (mission-aware)
   // ==========================================================================
-  const hasTimeEstimate = /\*\*Total[:\*]*\s*[\d.]+\s*(hour|hr|min|h\b)/i.test(content) ||
-                          /Total:?\s*[\d.]+\s*(hour|hr|min|h\b)/i.test(content) ||
-                          /estimate[d]?:?\s*[\d.]+\s*(hour|hr|min|h\b)/i.test(content);
+  let hasCompleteEstimate = false;
 
-  const hasComplexity = /(Complexity|Confidence)[:\*]*\s*(Low|Medium|High)/i.test(content);
+  if (state.missionType === 'estimation') {
+    // Estimation missions: complete when time estimate + complexity are provided
+    const hasTimeEstimate = /\*\*Total[:\*]*\s*[\d.]+\s*(hour|hr|min|h\b)/i.test(content) ||
+                            /Total:?\s*[\d.]+\s*(hour|hr|min|h\b)/i.test(content) ||
+                            /estimate[d]?:?\s*[\d.]+\s*(hour|hr|min|h\b)/i.test(content);
 
-  const hasExplicitCompletion = /\u2705\s*(Estimation Complete|Task Complete|Done|Finished)/i.test(content) ||
-                                 /estimation complete/i.test(content) ||
-                                 /here'?s my estimate/i.test(content);
+    const hasComplexity = /(Complexity|Confidence)[:\*]*\s*(Low|Medium|High)/i.test(content);
 
-  const hasCompleteEstimate = (hasTimeEstimate && hasComplexity) || hasExplicitCompletion;
+    const hasExplicitEstimation = /estimation complete/i.test(content) ||
+                                   /here'?s my estimate/i.test(content);
+
+    hasCompleteEstimate = (hasTimeEstimate && hasComplexity) || hasExplicitEstimation;
+  } else {
+    // Non-estimation missions: complete when explicit completion marker is present
+    hasCompleteEstimate = /\u2705\s*(Task Complete|Research Complete|Done|Finished|Mission Complete)/i.test(content) ||
+                          /task complete/i.test(content) ||
+                          /research complete/i.test(content) ||
+                          /mission complete/i.test(content);
+  }
 
   if (hasCompleteEstimate) {
-    console.log('[Sidepanel] \u2705 TASK COMPLETE DETECTED');
+    console.log(`[Sidepanel] \u2705 TASK COMPLETE DETECTED (type: ${state.missionType})`);
     addSystemNotice('\u2705 Task complete!');
 
     if (state.todoList.length > 0) {
@@ -225,11 +235,11 @@ async function parseAndExecuteActions(content, userMessage = '') {
   const anyActionExecuted = navigationExecuted || switchExecuted || domActionExecuted ||
                             todoActions.length > 0 || storeActions.length > 0;
 
-  // If AI asked a question BUT we have Jira context, FORCE CONTINUE (AI forgot)
+  // If in estimation mode and AI asked for ticket info it already has, FORCE CONTINUE
   const hasJiraContext = !!state.storedJiraContext?.ticketInfo;
   const aiAskedForTicket = /jira ticket|what needs to be|what ticket|specific task/i.test(content);
 
-  if (aiAskedForTicket && hasJiraContext) {
+  if (state.missionType === 'estimation' && aiAskedForTicket && hasJiraContext) {
     console.log('[Sidepanel] \u26A0\uFE0F AI asked for ticket but we have it - FORCING CONTINUE');
     addSystemNotice('\u26A0\uFE0F AI forgot context - reminding it...');
     loopCount++;
@@ -463,14 +473,19 @@ async function buildContinuationMessage() {
   });
 
   const storedContext = await sendToBackground({ type: 'GET_MISSION_CONTEXT' }).catch(() => ({}));
+  const missionType = state.missionType || storedContext?.context?.missionType || 'general';
 
   let msg = `[CONTINUATION - Step ${loopCount}]\n\n`;
 
-  // Jira context first
+  // Jira context — only emphasize for estimation missions
   if (state.storedJiraContext?.ticketInfo) {
-    msg += `\u26A0\uFE0F **REMEMBER: YOU HAVE THE JIRA TICKET - DO NOT ASK FOR IT**\n\n`;
-    msg += `**\u{1F4CB} JIRA TICKET (use this for your estimate):**\n`;
     const jira = state.storedJiraContext;
+    if (missionType === 'estimation') {
+      msg += `\u26A0\uFE0F **REMEMBER: YOU HAVE THE JIRA TICKET - DO NOT ASK FOR IT**\n\n`;
+      msg += `**\u{1F4CB} JIRA TICKET (use this for your estimate):**\n`;
+    } else {
+      msg += `**\u{1F4CB} JIRA TICKET (for reference):**\n`;
+    }
     if (jira.ticketInfo.key) msg += `- **Ticket:** ${jira.ticketInfo.key}\n`;
     if (jira.ticketInfo.summary) msg += `- **Task:** ${jira.ticketInfo.summary}\n`;
     if (jira.ticketInfo.status) msg += `- **Status:** ${jira.ticketInfo.status}\n`;
@@ -482,7 +497,9 @@ async function buildContinuationMessage() {
       msg += `- **Related URLs:** ${jira.relatedLinks.map(l => l.url).join(', ')}\n`;
     }
     msg += '\n';
-    msg += `**YOUR GOAL:** Estimate the above ticket based on what you observe on the current page.\n\n`;
+    if (missionType === 'estimation') {
+      msg += `**YOUR GOAL:** Estimate the above ticket based on what you observe on the current page.\n\n`;
+    }
   } else {
     if (storedContext?.context?.criticalFindings?.length > 0) {
       const ticketFinding = storedContext.context.criticalFindings.find(f => /ticket:/i.test(f));
@@ -537,10 +554,23 @@ async function buildContinuationMessage() {
     msg += `**Interactive Elements:**\n${pageContent.keyElements.slice(0, 15).join('\n')}\n\n`;
   }
 
+  // Mission-specific closing instruction
   msg += `---\n`;
-  msg += `Continue analyzing this page in relation to the Jira ticket above. `;
-  msg += `Use action tags for next steps, or provide your final estimate if ready.\n`;
-  msg += `DO NOT ask for the Jira ticket - you already have it stored above.`;
+  if (missionType === 'estimation') {
+    msg += `Continue analyzing this page in relation to the Jira ticket above. `;
+    msg += `Use action tags for next steps, or provide your final estimate if ready.\n`;
+    msg += `DO NOT ask for the Jira ticket - you already have it stored above.`;
+  } else if (missionType === 'action') {
+    msg += `Continue executing the user's task. Use action tags for the next step.\n`;
+    msg += `Focus on COMPLETING the task — do NOT provide time estimates or assessments.\n`;
+    msg += `PRIMARY GOAL: ${storedContext?.context?.primaryGoal || state.lastUserMessage}`;
+  } else if (missionType === 'research') {
+    msg += `Continue researching. Use action tags to explore further, or present your findings if ready.\n`;
+    msg += `PRIMARY GOAL: ${storedContext?.context?.primaryGoal || state.lastUserMessage}`;
+  } else {
+    msg += `Continue with the task. Use action tags for the next step.\n`;
+    msg += `PRIMARY GOAL: ${storedContext?.context?.primaryGoal || state.lastUserMessage}`;
+  }
 
   return msg;
 }
