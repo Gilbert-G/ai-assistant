@@ -126,10 +126,31 @@ Output ONE action tag, then STOP. Wait for the result before deciding the next s
 
 ### RULE #4: BE PRECISE WITH INTERACTIONS
 - For clicking: ALWAYS prefer CSS selectors over text matching when elements have data attributes, IDs, or unique classes
-- For calendar/date pickers: Use selectors like [data-date="2026-04-20"], [aria-label="April 20"], or button[data-day="20"] instead of just the number text
 - For form fields: Use the input's ID, name, or aria-label as the selector
 - When text is ambiguous (short text like "5", "20", single words), use a CSS selector instead
 - Example: <click selector="[aria-label='Saturday, April 20, 2026']" description="Select April 20" /> is better than <click text="20" />
+
+### RULE #5: SPA WIDGET INTERACTION PATTERNS
+Modern web apps use custom widgets. Follow these patterns:
+
+**Autocomplete/search fields (e.g., Google Flights, Jira):**
+1. Click on the field (use aria-label or placeholder text)
+2. Type the search text — autocomplete suggestions will appear
+3. Check the Interactive Elements list for "Option:" entries showing dropdown results
+4. Click on the correct option from the dropdown — do NOT just type and press Enter
+
+**Calendar/date pickers:**
+1. Click the date field to open the calendar widget
+2. Look at the "Calendar header:" in Interactive Elements to see which month is displayed
+3. Click the next/previous month buttons (look for buttons with aria-label "Next month" or "Previous month") to navigate to the target month
+4. Once on the correct month, click the date cell using its aria-label or data-date attribute
+5. Example: <click selector="[aria-label='Saturday, April 28, 2026']" description="Select April 28" />
+6. NEVER type a date string like "04/28/2026" — calendar widgets reject typed input
+
+**Dropdowns and select widgets:**
+1. Click to open the dropdown
+2. Wait for options to appear in Interactive Elements
+3. Click the desired option
 
 ## ACTION TAGS
 
@@ -150,6 +171,9 @@ Type text:
 
 Press a key:
 <pressKey key="Return" purpose="Submit" />
+
+Wait for UI to update (use after typing to let autocomplete appear):
+<wait duration="2000" purpose="Wait for search results" />
 
 Store a finding:
 <storeContext key="price" value="$450 round trip" />

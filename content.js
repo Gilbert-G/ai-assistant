@@ -268,16 +268,46 @@ function extractGenericContent() {
 function extractKeyElements() {
   const elements = [];
 
-  // Buttons — include aria-label and selector hints
+  // Buttons — include aria-label for icon-only buttons (calendar arrows, etc.)
   document.querySelectorAll('button, [role="button"], input[type="submit"]').forEach((el, i) => {
-    if (i < 15 && el.offsetParent !== null) {
-      const text = el.textContent.trim() || el.value || el.getAttribute('aria-label');
+    if (i < 25 && el.offsetParent !== null) {
+      const text = el.textContent.trim();
       const ariaLabel = el.getAttribute('aria-label');
+      const title = el.getAttribute('title');
       const id = el.id ? `#${el.id}` : '';
-      if (text && text.length < 50) {
-        let entry = `Button: "${text}"`;
-        if (ariaLabel && ariaLabel !== text) entry += ` [aria-label="${ariaLabel}"]`;
+      const label = text || el.value || ariaLabel || title;
+      if (label && label.length < 80) {
+        let entry = `Button: "${label}"`;
+        if (ariaLabel && ariaLabel !== label) entry += ` [aria-label="${ariaLabel}"]`;
         if (id) entry += ` [selector="${id}"]`;
+        elements.push(entry);
+      }
+    }
+  });
+
+  // ARIA combobox/searchbox/listbox widgets (SPAs use these instead of <input>)
+  document.querySelectorAll('[role="combobox"], [role="searchbox"], [role="listbox"]').forEach((el, i) => {
+    if (i < 10 && el.offsetParent !== null) {
+      const ariaLabel = el.getAttribute('aria-label') || el.getAttribute('placeholder') || '';
+      const expanded = el.getAttribute('aria-expanded');
+      const id = el.id ? `#${el.id}` : '';
+      if (ariaLabel) {
+        let entry = `Widget: "${ariaLabel}" [role="${el.getAttribute('role')}"]`;
+        if (expanded) entry += ` [expanded=${expanded}]`;
+        if (id) entry += ` [selector="${id}"]`;
+        elements.push(entry);
+      }
+    }
+  });
+
+  // Open dropdown/listbox options — surface autocomplete suggestions to the LLM
+  document.querySelectorAll('[role="listbox"] [role="option"], [role="menu"] [role="menuitem"]').forEach((el, i) => {
+    if (i < 10 && el.offsetParent !== null) {
+      const text = el.textContent.trim();
+      const ariaLabel = el.getAttribute('aria-label');
+      if (text && text.length < 80) {
+        let entry = `Option: "${text}"`;
+        if (ariaLabel && ariaLabel !== text) entry += ` [aria-label="${ariaLabel}"]`;
         elements.push(entry);
       }
     }
@@ -298,6 +328,16 @@ function extractKeyElements() {
     }
   });
 
+  // Calendar header (current month/year) — helps LLM navigate to target month
+  document.querySelectorAll('[role="heading"][aria-live], [role="grid"] caption, [class*="month"], [class*="Month"]').forEach((el, i) => {
+    if (i < 3 && el.offsetParent !== null) {
+      const text = el.textContent.trim();
+      if (text && text.length < 50) {
+        elements.push(`Calendar header: "${text}"`);
+      }
+    }
+  });
+
   // Links in navigation
   document.querySelectorAll('nav a, .menu a, #menu a, .nav a').forEach((el, i) => {
     if (i < 10 && el.offsetParent !== null) {
@@ -308,9 +348,9 @@ function extractKeyElements() {
     }
   });
 
-  // Input fields — include selector info
-  document.querySelectorAll('input[type="text"], input[type="search"], input[type="email"], input[type="number"], textarea').forEach((el, i) => {
-    if (i < 8 && el.offsetParent !== null) {
+  // Input fields — include selector info, also detect inputs without explicit type
+  document.querySelectorAll('input[type="text"], input[type="search"], input[type="email"], input[type="number"], input:not([type]), textarea').forEach((el, i) => {
+    if (i < 10 && el.offsetParent !== null) {
       const label = el.getAttribute('placeholder') || el.getAttribute('aria-label') || el.name;
       const id = el.id ? `#${el.id}` : '';
       const name = el.name ? `[name="${el.name}"]` : '';
@@ -407,24 +447,40 @@ function handleClick(message, sendResponse) {
     element = document.querySelector(selector);
     // If selector found an element but it's not visible, try broader
     if (element && !isVisible(element)) {
+      // First try other matching elements
       const allBySelector = document.querySelectorAll(selector);
-      element = null;
+      let found = false;
       for (const el of allBySelector) {
         if (isVisible(el)) {
           element = el;
+          found = true;
           break;
         }
+      }
+      // If no visible match, walk up to the nearest visible parent (SPA overlay pattern).
+      // SPAs often hide the real <input> and overlay a styled container.
+      if (!found && element) {
+        let parent = element.parentElement;
+        while (parent && parent !== document.body) {
+          if (isVisible(parent) && parent.offsetHeight > 0 && parent.offsetWidth > 0) {
+            element = parent;
+            found = true;
+            break;
+          }
+          parent = parent.parentElement;
+        }
+        if (!found) element = null;
       }
     }
   }
 
   // Try text content with improved matching
   if (!element && text) {
-    // Broad query covering interactive elements, SPA nav patterns, and framework components
+    // Broad query covering interactive elements, SPA nav patterns, ARIA widgets, and framework components
     const allElements = document.querySelectorAll(
       'button, a, [role="button"], [role="gridcell"], [role="option"], [role="tab"], [role="menuitem"], ' +
-      '[role="link"], [role="switch"], [role="checkbox"], [role="radio"], ' +
-      'input[type="submit"], input[type="button"], [onclick], [data-testid], ' +
+      '[role="link"], [role="switch"], [role="checkbox"], [role="radio"], [role="combobox"], [role="searchbox"], ' +
+      'input[type="submit"], input[type="button"], input, [onclick], [data-testid], ' +
       'td, th, li, label, span, div[tabindex], span[tabindex], ' +
       'nav a, nav button, nav span, nav div, ' +
       '[class*="tab"], [class*="Tab"], [class*="nav-"], [class*="menu-"]'
@@ -435,6 +491,7 @@ function handleClick(message, sendResponse) {
     let exactInViewport = null;  // exact + in viewport (best of best)
     let substringMatch = null;   // text contains search
     let ariaMatch = null;        // aria-label match
+    let placeholderMatch = null; // placeholder attribute match
     let directTextMatch = null;  // element's own direct text (not children)
 
     for (const el of allElements) {
@@ -443,6 +500,7 @@ function handleClick(message, sendResponse) {
       const elText = el.textContent.trim().toLowerCase();
       const elValue = el.value?.toLowerCase() || '';
       const elAriaLabel = el.getAttribute('aria-label')?.toLowerCase() || '';
+      const elPlaceholder = el.getAttribute('placeholder')?.toLowerCase() || '';
       // Direct text: only the element's own text nodes (not descendants)
       const directText = Array.from(el.childNodes)
         .filter(n => n.nodeType === Node.TEXT_NODE)
@@ -456,9 +514,12 @@ function handleClick(message, sendResponse) {
         if (!exactMatch) exactMatch = el;
         if (!exactInViewport && isInViewport(el)) exactInViewport = el;
       }
-      // Priority 2: Exact aria-label match
+      // Priority 2: Exact aria-label or placeholder match
       else if (elAriaLabel === textLower || elAriaLabel.includes(textLower)) {
         if (!ariaMatch) ariaMatch = el;
+      }
+      else if (elPlaceholder === textLower || elPlaceholder.includes(textLower)) {
+        if (!placeholderMatch) placeholderMatch = el;
       }
       // Priority 3: Substring match (only if text is long enough to be unambiguous)
       else if (textLower.length >= 3 && (elText.includes(textLower) || elValue.includes(textLower))) {
@@ -469,8 +530,8 @@ function handleClick(message, sendResponse) {
       }
     }
 
-    // Select best match: in-viewport exact > direct text > exact > aria > substring
-    element = exactInViewport || directTextMatch || exactMatch || ariaMatch || substringMatch;
+    // Select best match: in-viewport exact > direct text > exact > aria > placeholder > substring
+    element = exactInViewport || directTextMatch || exactMatch || ariaMatch || placeholderMatch || substringMatch;
 
     // Last resort: walk all visible elements in the DOM for a text match
     if (!element) {
@@ -528,41 +589,95 @@ function handleScroll(message, sendResponse) {
 
 function handleType(message, sendResponse) {
   const { selector, text } = message;
-  
-  // Find input
-  let input = selector ? document.querySelector(selector) : document.activeElement;
-  
-  // Try to find any focused or visible input
-  if (!input || !['INPUT', 'TEXTAREA'].includes(input.tagName)) {
-    input = document.querySelector('input:focus, textarea:focus') ||
-            document.querySelector('input[type="text"]:not([type="hidden"]), textarea');
-  }
-  
-  if (input) {
-    input.focus();
 
-    // Use the native value setter to bypass React/Angular internal value tracking.
-    // Directly setting .value on framework-controlled inputs is silently ignored
-    // because frameworks override the setter. The native HTMLInputElement setter
-    // updates the actual DOM value, and the subsequent 'input' event triggers
-    // the framework's state update.
+  // Find target element — support real inputs AND ARIA widget elements
+  // (e.g. div[role="combobox"], div[contenteditable])
+  let input = selector ? document.querySelector(selector) : document.activeElement;
+
+  if (!input || (input === document.body)) {
+    // Try focused element, then ARIA comboboxes, then standard inputs
+    input = document.querySelector('input:focus, textarea:focus, [role="combobox"]:focus, [contenteditable]:focus') ||
+            document.querySelector('[role="combobox"]') ||
+            document.querySelector('input[type="text"]:not([type="hidden"]), input:not([type]), textarea');
+  }
+
+  // Accept INPUT, TEXTAREA, contenteditable, and ARIA combobox/searchbox elements
+  const isTypable = input && (
+    ['INPUT', 'TEXTAREA'].includes(input.tagName) ||
+    input.hasAttribute('contenteditable') ||
+    ['combobox', 'searchbox', 'textbox'].includes(input.getAttribute('role'))
+  );
+
+  if (!isTypable) {
+    sendResponse({ success: false, error: 'No input field found' });
+    return;
+  }
+
+  input.focus();
+
+  // Clear existing value
+  if (['INPUT', 'TEXTAREA'].includes(input.tagName)) {
     const prototype = input.tagName === 'TEXTAREA'
       ? HTMLTextAreaElement.prototype
       : HTMLInputElement.prototype;
     const nativeSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
     if (nativeSetter) {
-      nativeSetter.call(input, text);
+      nativeSetter.call(input, '');
     } else {
-      input.value = text;
+      input.value = '';
     }
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-
-    showTypeFeedback(input);
-    sendResponse({ success: true });
-  } else {
-    sendResponse({ success: false, error: 'No input field found' });
+  } else if (input.hasAttribute('contenteditable')) {
+    input.textContent = '';
   }
+
+  // Simulate per-character keyboard input — required for SPA autocomplete/search.
+  // SPAs like Google Flights listen for individual keydown/keyup events and
+  // InputEvents with proper `inputType` and `data` properties.
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+
+    input.dispatchEvent(new KeyboardEvent('keydown', {
+      key: char, code: `Key${char.toUpperCase()}`,
+      bubbles: true, cancelable: true
+    }));
+    input.dispatchEvent(new KeyboardEvent('keypress', {
+      key: char, code: `Key${char.toUpperCase()}`,
+      bubbles: true, cancelable: true
+    }));
+
+    // Append character to value
+    if (['INPUT', 'TEXTAREA'].includes(input.tagName)) {
+      const prototype = input.tagName === 'TEXTAREA'
+        ? HTMLTextAreaElement.prototype
+        : HTMLInputElement.prototype;
+      const nativeSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+      if (nativeSetter) {
+        nativeSetter.call(input, text.substring(0, i + 1));
+      } else {
+        input.value = text.substring(0, i + 1);
+      }
+    } else if (input.hasAttribute('contenteditable')) {
+      input.textContent = text.substring(0, i + 1);
+    }
+
+    // Fire InputEvent with proper properties for framework compatibility
+    input.dispatchEvent(new InputEvent('input', {
+      bubbles: true,
+      cancelable: true,
+      inputType: 'insertText',
+      data: char
+    }));
+
+    input.dispatchEvent(new KeyboardEvent('keyup', {
+      key: char, code: `Key${char.toUpperCase()}`,
+      bubbles: true, cancelable: true
+    }));
+  }
+
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+
+  showTypeFeedback(input);
+  sendResponse({ success: true });
 }
 
 function handlePressKey(message, sendResponse) {

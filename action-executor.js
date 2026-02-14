@@ -454,6 +454,8 @@ async function executeDomAction(action) {
         });
 
         result.executed = true;
+        // Wait for autocomplete/dropdown to appear after typing
+        await new Promise(resolve => setTimeout(resolve, 1500));
         addSystemNotice(`\u2705 Typed`);
         logAction('type', action.text, 'success');
       } catch (err) {
