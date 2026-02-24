@@ -687,16 +687,39 @@ async function navigateTab(tabId, url) {
   logCompletedAction(`Navigate to ${url}`, 'started');
 
   return new Promise((resolve) => {
+    let resolved = false;
+    const cleanup = () => {
+      chrome.tabs.onUpdated.removeListener(listener);
+      chrome.tabs.onRemoved.removeListener(removedListener);
+    };
+
     const listener = (updatedTabId, changeInfo) => {
       if (updatedTabId === tabId && changeInfo.status === 'complete') {
-        chrome.tabs.onUpdated.removeListener(listener);
+        if (resolved) return;
+        resolved = true;
+        cleanup();
         logCompletedAction(`Navigate to ${url}`, 'completed');
         resolve({ success: true });
       }
     };
+
+    // Detect tab crash or closure during navigation
+    const removedListener = (closedTabId) => {
+      if (closedTabId === tabId) {
+        if (resolved) return;
+        resolved = true;
+        cleanup();
+        logCompletedAction(`Navigate to ${url}`, 'tab closed');
+        resolve({ success: false, error: 'Tab was closed during navigation' });
+      }
+    };
+
     chrome.tabs.onUpdated.addListener(listener);
+    chrome.tabs.onRemoved.addListener(removedListener);
     setTimeout(() => {
-      chrome.tabs.onUpdated.removeListener(listener);
+      if (resolved) return;
+      resolved = true;
+      cleanup();
       logCompletedAction(`Navigate to ${url}`, 'timeout');
       resolve({ success: true, timeout: true, warning: 'Page load timed out after 30s' });
     }, 30000);
@@ -718,17 +741,25 @@ async function navigateNewTab(url, purpose) {
     });
     
     return new Promise((resolve) => {
+      let resolved = false;
+      const cleanup = () => {
+        chrome.tabs.onUpdated.removeListener(listener);
+        chrome.tabs.onRemoved.removeListener(removedListener);
+      };
+
       const listener = (tabId, changeInfo, updatedTab) => {
         if (tabId === tab.id && changeInfo.status === 'complete') {
-          chrome.tabs.onUpdated.removeListener(listener);
-          
+          if (resolved) return;
+          resolved = true;
+          cleanup();
+
           tabRegistry.set(tab.id, {
             ...tabRegistry.get(tab.id),
             url: updatedTab.url,
             title: updatedTab.title,
             platform: detectPlatform(updatedTab.url)
           });
-          
+
           chrome.runtime.sendMessage({
             type: 'TAB_UPDATED',
             tabId: tab.id,
@@ -737,9 +768,9 @@ async function navigateNewTab(url, purpose) {
             platform: detectPlatform(updatedTab.url),
             isPrimary: false
           }).catch(() => {});
-          
+
           logCompletedAction(`Navigated to ${updatedTab.url}`, 'completed');
-          
+
           resolve({
             success: true,
             tabId: tab.id,
@@ -749,10 +780,23 @@ async function navigateNewTab(url, purpose) {
           });
         }
       };
-      
+
+      const removedListener = (closedTabId) => {
+        if (closedTabId === tab.id) {
+          if (resolved) return;
+          resolved = true;
+          cleanup();
+          logCompletedAction(`Navigate to ${url}`, 'tab closed');
+          resolve({ success: false, error: 'Tab was closed during navigation' });
+        }
+      };
+
       chrome.tabs.onUpdated.addListener(listener);
+      chrome.tabs.onRemoved.addListener(removedListener);
       setTimeout(() => {
-        chrome.tabs.onUpdated.removeListener(listener);
+        if (resolved) return;
+        resolved = true;
+        cleanup();
         logCompletedAction(`Navigate to ${url}`, 'timeout');
         resolve({ success: true, tabId: tab.id, url, timeout: true, warning: 'Page load timed out after 30s' });
       }, 30000);
@@ -767,15 +811,36 @@ async function createTab(url, active = false) {
   const tab = await chrome.tabs.create({ url, active });
 
   return new Promise((resolve) => {
+    let resolved = false;
+    const cleanup = () => {
+      chrome.tabs.onUpdated.removeListener(listener);
+      chrome.tabs.onRemoved.removeListener(removedListener);
+    };
+
     const listener = (tabId, changeInfo) => {
       if (tabId === tab.id && changeInfo.status === 'complete') {
-        chrome.tabs.onUpdated.removeListener(listener);
+        if (resolved) return;
+        resolved = true;
+        cleanup();
         resolve({ success: true, tabId: tab.id });
       }
     };
+
+    const removedListener = (closedTabId) => {
+      if (closedTabId === tab.id) {
+        if (resolved) return;
+        resolved = true;
+        cleanup();
+        resolve({ success: false, error: 'Tab was closed before loading' });
+      }
+    };
+
     chrome.tabs.onUpdated.addListener(listener);
+    chrome.tabs.onRemoved.addListener(removedListener);
     setTimeout(() => {
-      chrome.tabs.onUpdated.removeListener(listener);
+      if (resolved) return;
+      resolved = true;
+      cleanup();
       resolve({ success: true, tabId: tab.id, timeout: true, warning: 'Page load timed out after 30s' });
     }, 30000);
   });
@@ -1057,7 +1122,9 @@ chrome.runtime.onConnect.addListener((port) => {
   if (port.name === 'keepalive') {
     console.log('[Background] Keepalive port connected');
     const keepAliveInterval = setInterval(() => {
-      // Periodic no-op to keep the service worker event loop active
+      // Perform a minimal Chrome API call to keep the service worker alive.
+      // Empty callbacks may be optimized away by the browser.
+      chrome.runtime.getPlatformInfo(() => {});
     }, 20000);
     port.onDisconnect.addListener(() => {
       clearInterval(keepAliveInterval);

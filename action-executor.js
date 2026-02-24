@@ -440,9 +440,11 @@ async function executeDomAction(action) {
           }
           logAction('scroll', scrollDesc, 'success');
         } else {
+          addSystemNotice(`\u26A0\uFE0F Scroll failed: ${scrollResult?.error || 'unknown'}`);
           logAction('scroll', scrollDesc, 'failed');
         }
       } catch (err) {
+        addSystemNotice(`\u26A0\uFE0F Scroll failed: ${err.message}`);
         logAction('scroll', scrollDesc, 'failed');
       }
       break;
@@ -459,7 +461,8 @@ async function executeDomAction(action) {
             type: 'TYPE',
             index: action.index,
             selector: action.selector,
-            text: action.text
+            text: action.text,
+            clear: action.clear
           }
         });
 
@@ -484,7 +487,7 @@ async function executeDomAction(action) {
       logAction('pressKey', action.key, 'started');
 
       try {
-        await sendToBackground({
+        const keyResult = await sendToBackground({
           type: 'EXECUTE_IN_TAB',
           tabId: state.currentTabId,
           action: {
@@ -497,10 +500,17 @@ async function executeDomAction(action) {
           }
         });
 
-        result.executed = true;
-        await new Promise(resolve => setTimeout(resolve, 500));
-        logAction('pressKey', action.key, 'success');
+        if (keyResult?.success) {
+          result.executed = true;
+          await new Promise(resolve => setTimeout(resolve, 500));
+          addSystemNotice(`\u2705 Key pressed: ${action.key}`);
+          logAction('pressKey', action.key, 'success');
+        } else {
+          addSystemNotice(`\u26A0\uFE0F Key press failed: ${keyResult?.error || 'unknown'}`);
+          logAction('pressKey', action.key, 'failed');
+        }
       } catch (err) {
+        addSystemNotice(`\u26A0\uFE0F Key press failed: ${err.message}`);
         logAction('pressKey', action.key, 'failed');
       }
       break;

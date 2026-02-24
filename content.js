@@ -821,7 +821,7 @@ function handleScroll(message, sendResponse) {
 }
 
 function handleType(message, sendResponse) {
-  const { selector, text, index } = message;
+  const { selector, text, index, clear } = message;
   let input = null;
 
   // Priority 0: Index-based lookup (from element map)
@@ -868,19 +868,32 @@ function handleType(message, sendResponse) {
 
   input.focus();
 
-  // Clear existing value
-  if (['INPUT', 'TEXTAREA'].includes(input.tagName)) {
-    const prototype = input.tagName === 'TEXTAREA'
-      ? HTMLTextAreaElement.prototype
-      : HTMLInputElement.prototype;
-    const nativeSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
-    if (nativeSetter) {
-      nativeSetter.call(input, '');
-    } else {
-      input.value = '';
+  // Clear existing value unless clear="false" (allows appending to existing text)
+  const shouldClear = clear !== 'false' && clear !== false;
+  if (shouldClear) {
+    if (['INPUT', 'TEXTAREA'].includes(input.tagName)) {
+      const prototype = input.tagName === 'TEXTAREA'
+        ? HTMLTextAreaElement.prototype
+        : HTMLInputElement.prototype;
+      const nativeSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+      if (nativeSetter) {
+        nativeSetter.call(input, '');
+      } else {
+        input.value = '';
+      }
+    } else if (input.hasAttribute('contenteditable')) {
+      input.textContent = '';
     }
-  } else if (input.hasAttribute('contenteditable')) {
-    input.textContent = '';
+  }
+
+  // Capture the current value prefix for append mode
+  let existingValue = '';
+  if (!shouldClear) {
+    if (['INPUT', 'TEXTAREA'].includes(input.tagName)) {
+      existingValue = input.value || '';
+    } else if (input.hasAttribute('contenteditable')) {
+      existingValue = input.textContent || '';
+    }
   }
 
   // Simulate per-character keyboard input — required for SPA autocomplete/search.
@@ -906,19 +919,20 @@ function handleType(message, sendResponse) {
       bubbles: true, cancelable: true
     }));
 
-    // Append character to value
+    // Append character to value (preserve existingValue in append mode)
+    const newValue = existingValue + text.substring(0, i + 1);
     if (['INPUT', 'TEXTAREA'].includes(input.tagName)) {
       const prototype = input.tagName === 'TEXTAREA'
         ? HTMLTextAreaElement.prototype
         : HTMLInputElement.prototype;
       const nativeSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
       if (nativeSetter) {
-        nativeSetter.call(input, text.substring(0, i + 1));
+        nativeSetter.call(input, newValue);
       } else {
-        input.value = text.substring(0, i + 1);
+        input.value = newValue;
       }
     } else if (input.hasAttribute('contenteditable')) {
-      input.textContent = text.substring(0, i + 1);
+      input.textContent = newValue;
     }
 
     // Fire InputEvent with proper properties for framework compatibility
