@@ -612,6 +612,15 @@ function handleClick(message, sendResponse) {
     if (candidate && document.body.contains(candidate) &&
         (candidate.tagName === 'OPTION' || isVisible(candidate))) {
       element = candidate;
+    } else if (candidate) {
+      // Element went stale (SPA re-render). Rebuild the map and retry once.
+      console.log('[Content] Stale element at index', idx, '— rebuilding element map');
+      buildElementMap();
+      const refreshed = window.__manurevaElements[idx];
+      if (refreshed && document.body.contains(refreshed) &&
+          (refreshed.tagName === 'OPTION' || isVisible(refreshed))) {
+        element = refreshed;
+      }
     }
   }
 
@@ -735,29 +744,33 @@ function handleClick(message, sendResponse) {
   }
 
   if (element) {
+    // Scroll into view first
+    element.scrollIntoView({ behavior: 'instant', block: 'center' });
+
     // Visual feedback
     showClickFeedback(element);
 
-    // Scroll into view
-    element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-
-    // Send response BEFORE the delayed click — if the click triggers a page
-    // navigation, the content script is destroyed and sendResponse would be lost.
+    // Perform the click synchronously so the response reflects the actual outcome.
+    // We must send the response AFTER clicking but BEFORE any resulting page
+    // navigation destroys the content script. Using a microtask (Promise.resolve)
+    // ensures the click runs first while sendResponse still works.
     const clickedText = element.textContent?.trim().substring(0, 50);
-    sendResponse({ success: true, clicked: clickedText });
 
-    // Click after a small delay for visual effect
-    setTimeout(() => {
+    try {
       simulateRealClick(element);
-    }, 300);
+      sendResponse({ success: true, clicked: clickedText });
+    } catch (err) {
+      sendResponse({ success: false, error: err.message });
+    }
   } else {
-    sendResponse({ success: false, error: `Element not found: ${selector || text}` });
+    sendResponse({ success: false, error: `Element not found: ${selector || text || description}` });
   }
 }
 
 function handleScroll(message, sendResponse) {
   const { direction, amount, to } = message;
-  
+  const scrollBefore = window.scrollY;
+
   if (to === 'bottom') {
     window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
   } else if (to === 'top') {
@@ -767,8 +780,13 @@ function handleScroll(message, sendResponse) {
   } else if (direction === 'up') {
     window.scrollBy({ top: -(amount || 500), behavior: 'smooth' });
   }
-  
-  sendResponse({ success: true });
+
+  // Check if scroll position actually changed after a short delay
+  // (smooth scrolling is async, so we check after a brief wait)
+  setTimeout(() => {
+    const scrolled = window.scrollY !== scrollBefore;
+    sendResponse({ success: true, scrolled });
+  }, 100);
 }
 
 function handleType(message, sendResponse) {
@@ -782,6 +800,14 @@ function handleType(message, sendResponse) {
     // Verify element is still in DOM and visible (guards against stale references)
     if (candidate && document.body.contains(candidate) && isVisible(candidate)) {
       input = candidate;
+    } else if (candidate) {
+      // Element went stale (SPA re-render). Rebuild the map and retry once.
+      console.log('[Content] Stale element at index', idx, '— rebuilding element map');
+      buildElementMap();
+      const refreshed = window.__manurevaElements[idx];
+      if (refreshed && document.body.contains(refreshed) && isVisible(refreshed)) {
+        input = refreshed;
+      }
     }
   }
 
@@ -832,12 +858,20 @@ function handleType(message, sendResponse) {
   for (let i = 0; i < text.length; i++) {
     const char = text[i];
 
+    // Derive the correct KeyboardEvent.code for each character
+    let charCode;
+    if (char >= 'a' && char <= 'z') charCode = 'Key' + char.toUpperCase();
+    else if (char >= 'A' && char <= 'Z') charCode = 'Key' + char;
+    else if (char >= '0' && char <= '9') charCode = 'Digit' + char;
+    else if (char === ' ') charCode = 'Space';
+    else charCode = '';  // punctuation/symbols — code varies by keyboard layout
+
     input.dispatchEvent(new KeyboardEvent('keydown', {
-      key: char, code: `Key${char.toUpperCase()}`,
+      key: char, code: charCode,
       bubbles: true, cancelable: true
     }));
     input.dispatchEvent(new KeyboardEvent('keypress', {
-      key: char, code: `Key${char.toUpperCase()}`,
+      key: char, code: charCode,
       bubbles: true, cancelable: true
     }));
 
@@ -865,7 +899,7 @@ function handleType(message, sendResponse) {
     }));
 
     input.dispatchEvent(new KeyboardEvent('keyup', {
-      key: char, code: `Key${char.toUpperCase()}`,
+      key: char, code: charCode,
       bubbles: true, cancelable: true
     }));
   }
@@ -974,6 +1008,24 @@ function handlePressKey(message, sendResponse) {
 
   // Dispatch keyup
   target.dispatchEvent(new KeyboardEvent('keyup', eventProps));
+
+  // For Enter: trigger form submission if the target is inside a form.
+  // Synthetic keyboard events do not replicate the browser's built-in
+  // "pressing Enter submits the form" behavior.
+  if (keyValue === 'Enter' && !modifiers.shiftKey) {
+    const form = target.closest?.('form');
+    if (form) {
+      // Use requestSubmit() which fires the submit event and runs validation,
+      // unlike form.submit() which bypasses both.
+      try {
+        if (typeof form.requestSubmit === 'function') {
+          form.requestSubmit();
+        }
+      } catch (e) {
+        // requestSubmit can throw if the form is invalid; that's fine
+      }
+    }
+  }
 
   // For Escape: also dispatch on document and document.body as a fallback so
   // that dialog/modal listeners that are bound to these targets receive it.

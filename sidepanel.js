@@ -451,10 +451,25 @@ async function sendMessageToAssistant(message, isUserInitiated = true) {
     }
     addErrorMessage(error.message);
     console.error('[Sidepanel] Error:', error);
-  }
+  } finally {
+    // Always restore UI state, even if an error occurs during continuation.
+    // This prevents the send button from being permanently disabled.
+    state.isProcessing = false;
+    elements.sendBtn.disabled = false;
 
-  state.isProcessing = false;
-  elements.sendBtn.disabled = false;
+    // Sync currentTabId with the browser's actually-active tab.
+    // During processing, the onActivated listener ignores tab switches to prevent
+    // interference. Now that processing is done, we need to pick up any tab
+    // changes that occurred in the meantime.
+    try {
+      const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (activeTab) {
+        state.currentTabId = activeTab.id;
+      }
+    } catch (e) {
+      // Non-critical — keep existing currentTabId
+    }
+  }
 }
 
 // ============================================================================

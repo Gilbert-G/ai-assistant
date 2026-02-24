@@ -682,10 +682,10 @@ async function getTabInfo(tabId) {
 
 async function navigateTab(tabId, url) {
   await chrome.tabs.update(tabId, { url });
-  
+
   // Log the action
   logCompletedAction(`Navigate to ${url}`, 'started');
-  
+
   return new Promise((resolve) => {
     const listener = (updatedTabId, changeInfo) => {
       if (updatedTabId === tabId && changeInfo.status === 'complete') {
@@ -697,7 +697,8 @@ async function navigateTab(tabId, url) {
     chrome.tabs.onUpdated.addListener(listener);
     setTimeout(() => {
       chrome.tabs.onUpdated.removeListener(listener);
-      resolve({ success: true, timeout: true });
+      logCompletedAction(`Navigate to ${url}`, 'timeout');
+      resolve({ success: true, timeout: true, warning: 'Page load timed out after 30s' });
     }, 30000);
   });
 }
@@ -752,7 +753,8 @@ async function navigateNewTab(url, purpose) {
       chrome.tabs.onUpdated.addListener(listener);
       setTimeout(() => {
         chrome.tabs.onUpdated.removeListener(listener);
-        resolve({ success: true, tabId: tab.id, url, timeout: true });
+        logCompletedAction(`Navigate to ${url}`, 'timeout');
+        resolve({ success: true, tabId: tab.id, url, timeout: true, warning: 'Page load timed out after 30s' });
       }, 30000);
     });
   } catch (error) {
@@ -763,7 +765,7 @@ async function navigateNewTab(url, purpose) {
 
 async function createTab(url, active = false) {
   const tab = await chrome.tabs.create({ url, active });
-  
+
   return new Promise((resolve) => {
     const listener = (tabId, changeInfo) => {
       if (tabId === tab.id && changeInfo.status === 'complete') {
@@ -774,7 +776,7 @@ async function createTab(url, active = false) {
     chrome.tabs.onUpdated.addListener(listener);
     setTimeout(() => {
       chrome.tabs.onUpdated.removeListener(listener);
-      resolve({ success: true, tabId: tab.id, timeout: true });
+      resolve({ success: true, tabId: tab.id, timeout: true, warning: 'Page load timed out after 30s' });
     }, 30000);
   });
 }
