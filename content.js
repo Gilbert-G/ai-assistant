@@ -897,7 +897,41 @@ function handlePressKey(message, sendResponse) {
     'Space': ' '
   };
 
-  const keyCode = keyMap[key] || key;
+  // Map key values to correct KeyboardEvent.code values
+  // The 'code' property represents the physical key on the keyboard
+  const codeMap = {
+    'Enter': 'Enter',
+    'Escape': 'Escape',
+    'Tab': 'Tab',
+    'Backspace': 'Backspace',
+    'Delete': 'Delete',
+    'ArrowUp': 'ArrowUp',
+    'ArrowDown': 'ArrowDown',
+    'ArrowLeft': 'ArrowLeft',
+    'ArrowRight': 'ArrowRight',
+    'Home': 'Home',
+    'End': 'End',
+    'PageUp': 'PageUp',
+    'PageDown': 'PageDown',
+    ' ': 'Space'
+  };
+
+  const keyValue = keyMap[key] || key;
+
+  // Derive the correct 'code' for the key
+  let codeValue = codeMap[keyValue];
+  if (!codeValue) {
+    if (keyValue.length === 1 && keyValue >= 'a' && keyValue <= 'z') {
+      codeValue = 'Key' + keyValue.toUpperCase();
+    } else if (keyValue.length === 1 && keyValue >= 'A' && keyValue <= 'Z') {
+      codeValue = 'Key' + keyValue;
+    } else if (keyValue.length === 1 && keyValue >= '0' && keyValue <= '9') {
+      codeValue = 'Digit' + keyValue;
+    } else {
+      codeValue = keyValue;
+    }
+  }
+
   const modifiers = {
     ctrlKey: ctrl === 'true' || ctrl === true,
     shiftKey: shift === 'true' || shift === true,
@@ -905,23 +939,58 @@ function handlePressKey(message, sendResponse) {
     metaKey: meta === 'true' || meta === true
   };
 
-  const target = document.activeElement || document.body;
-
-  target.dispatchEvent(new KeyboardEvent('keydown', {
-    key: keyCode,
-    code: keyCode,
+  const eventProps = {
+    key: keyValue,
+    code: codeValue,
     bubbles: true,
     cancelable: true,
     ...modifiers
-  }));
+  };
 
-  target.dispatchEvent(new KeyboardEvent('keyup', {
-    key: keyCode,
-    code: keyCode,
-    bubbles: true,
-    cancelable: true,
-    ...modifiers
-  }));
+  // For Escape key, dispatch on document to ensure dialogs/modals catch it.
+  // Many frameworks (Bootstrap, MUI, native <dialog>) listen for Escape on
+  // document or document.body rather than the focused element.
+  const target = (keyValue === 'Escape')
+    ? document.activeElement || document.body
+    : document.activeElement || document.body;
+
+  // Dispatch keydown
+  const keydownEvent = new KeyboardEvent('keydown', eventProps);
+  const keydownHandled = !target.dispatchEvent(keydownEvent);
+
+  // Dispatch keypress for printable keys (mirrors real browser behaviour).
+  // Non-printable keys (Escape, arrows, function keys, etc.) do NOT fire keypress.
+  const nonPrintable = [
+    'Escape', 'Tab', 'Backspace', 'Delete', 'Enter',
+    'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+    'Home', 'End', 'PageUp', 'PageDown',
+    'Control', 'Shift', 'Alt', 'Meta',
+    'CapsLock', 'NumLock', 'ScrollLock',
+    'F1','F2','F3','F4','F5','F6','F7','F8','F9','F10','F11','F12'
+  ];
+  if (!nonPrintable.includes(keyValue)) {
+    target.dispatchEvent(new KeyboardEvent('keypress', eventProps));
+  }
+
+  // Dispatch keyup
+  target.dispatchEvent(new KeyboardEvent('keyup', eventProps));
+
+  // For Escape: also dispatch on document and document.body as a fallback so
+  // that dialog/modal listeners that are bound to these targets receive it.
+  if (keyValue === 'Escape') {
+    for (const fallback of [document.body, document]) {
+      if (fallback && fallback !== target) {
+        fallback.dispatchEvent(new KeyboardEvent('keydown', eventProps));
+        fallback.dispatchEvent(new KeyboardEvent('keyup', eventProps));
+      }
+    }
+
+    // Also try to close native <dialog> elements that are open
+    const openDialog = document.querySelector('dialog[open]');
+    if (openDialog && typeof openDialog.close === 'function') {
+      openDialog.close();
+    }
+  }
 
   sendResponse({ success: true });
 }
