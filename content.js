@@ -902,7 +902,7 @@ function handleType(message, sendResponse) {
   for (let i = 0; i < text.length; i++) {
     const char = text[i];
 
-    // Derive the correct KeyboardEvent.code for each character
+    // Derive the correct KeyboardEvent.code and legacy keyCode for each character
     let charCode;
     if (char >= 'a' && char <= 'z') charCode = 'Key' + char.toUpperCase();
     else if (char >= 'A' && char <= 'Z') charCode = 'Key' + char;
@@ -910,12 +910,17 @@ function handleType(message, sendResponse) {
     else if (char === ' ') charCode = 'Space';
     else charCode = '';  // punctuation/symbols — code varies by keyboard layout
 
+    const charKeyCode = char.toUpperCase().charCodeAt(0);
+
     input.dispatchEvent(new KeyboardEvent('keydown', {
       key: char, code: charCode,
+      keyCode: charKeyCode, which: charKeyCode,
       bubbles: true, cancelable: true
     }));
     input.dispatchEvent(new KeyboardEvent('keypress', {
       key: char, code: charCode,
+      keyCode: char.charCodeAt(0), which: char.charCodeAt(0),
+      charCode: char.charCodeAt(0),
       bubbles: true, cancelable: true
     }));
 
@@ -945,6 +950,7 @@ function handleType(message, sendResponse) {
 
     input.dispatchEvent(new KeyboardEvent('keyup', {
       key: char, code: charCode,
+      keyCode: charKeyCode, which: charKeyCode,
       bubbles: true, cancelable: true
     }));
   }
@@ -1011,6 +1017,20 @@ function handlePressKey(message, sendResponse) {
     }
   }
 
+  // Map key names to legacy keyCode values.  Many websites still check
+  // event.keyCode (e.g. keyCode === 13 for Enter) even though it is deprecated.
+  const keyCodeMap = {
+    'Enter': 13, 'Tab': 9, 'Escape': 27, 'Backspace': 8, 'Delete': 46,
+    ' ': 32,
+    'ArrowUp': 38, 'ArrowDown': 40, 'ArrowLeft': 37, 'ArrowRight': 39,
+    'Home': 36, 'End': 35, 'PageUp': 33, 'PageDown': 34
+  };
+  let keyCodeValue = keyCodeMap[keyValue];
+  if (keyCodeValue === undefined) {
+    // For printable characters, keyCode is the uppercase char code
+    keyCodeValue = keyValue.length === 1 ? keyValue.toUpperCase().charCodeAt(0) : 0;
+  }
+
   const modifiers = {
     ctrlKey: ctrl === 'true' || ctrl === true,
     shiftKey: shift === 'true' || shift === true,
@@ -1021,6 +1041,8 @@ function handlePressKey(message, sendResponse) {
   const eventProps = {
     key: keyValue,
     code: codeValue,
+    keyCode: keyCodeValue,
+    which: keyCodeValue,
     bubbles: true,
     cancelable: true,
     ...modifiers
@@ -1054,10 +1076,17 @@ function handlePressKey(message, sendResponse) {
   // Dispatch keyup
   target.dispatchEvent(new KeyboardEvent('keyup', eventProps));
 
-  // For Enter: trigger form submission if the target is inside a form.
+  // For Enter: trigger form submission and/or change events.
   // Synthetic keyboard events do not replicate the browser's built-in
-  // "pressing Enter submits the form" behavior.
+  // "pressing Enter submits the form" behavior or the "change" event
+  // that fires when Enter is pressed in an input field.
   if (keyValue === 'Enter' && !modifiers.shiftKey) {
+    // Dispatch a 'change' event on the target — SPAs often listen for this
+    // to know the user has committed their input (e.g. pagination, search).
+    if (target && target !== document && target !== document.body) {
+      target.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
     const form = target.closest?.('form');
     if (form) {
       // Use requestSubmit() which fires the submit event and runs validation,
