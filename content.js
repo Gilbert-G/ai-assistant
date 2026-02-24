@@ -16,16 +16,18 @@ console.log('[Manureva Content] Script loaded');
 // DOMAIN SAFETY CHECK (defense-in-depth)
 // ============================================================================
 const SENSITIVE_DOMAIN_PATTERNS = [
-  /bank|banking|chase|wellsfargo|bofa|citi|hsbc|barclays/i,
-  /paypal|venmo|stripe\.com|square\.com/i,
+  // Match against hostname only (not full URL) to avoid false positives
+  // like foodbank.org, electricity.gov, citibike.com, etc.
+  /\b(bank|banking)\b|chase\.com|wellsfargo\.com|bofa\.com|citibank\.com|hsbc\.|barclays\./i,
+  /paypal\.com|venmo\.com|stripe\.com|square\.com/i,
   /signin\.aws|console\.aws/i,
   /accounts\.google|myaccount\.google/i,
   /login\.microsoft|portal\.azure/i
 ];
 
 function isOnSensitiveDomain() {
-  const url = window.location.href;
-  return SENSITIVE_DOMAIN_PATTERNS.some(pattern => pattern.test(url));
+  const hostname = window.location.hostname;
+  return SENSITIVE_DOMAIN_PATTERNS.some(pattern => pattern.test(hostname));
 }
 
 // ============================================================================
@@ -447,6 +449,10 @@ function detectActiveOverlay() {
   }
 
   // 4. Full-screen fixed/sticky elements with high z-index (generic modal detection)
+  // Must cover a significant portion of the viewport to be an overlay — this
+  // prevents normal navbars/headers (which are fixed but narrow) from being
+  // misidentified as blocking overlays.
+  const viewportArea = window.innerWidth * window.innerHeight;
   const topLevelDivs = document.querySelectorAll('body > div, body > aside, body > section');
   for (const el of topLevelDivs) {
     try {
@@ -458,8 +464,17 @@ function detectActiveOverlay() {
           parseInt(style.zIndex) > 100 &&
           el.offsetHeight > 80 &&
           el.offsetWidth > 200) {
-        // Check it contains at least one interactive element (not just a floating header/nav)
-        if (el.querySelector('button, a, [role="button"], input')) {
+        const elArea = el.offsetWidth * el.offsetHeight;
+        // Must cover at least 30% of the viewport to qualify as a blocking overlay.
+        // Navbars/headers typically cover < 15% of the viewport.
+        const coversSignificantArea = viewportArea > 0 && (elArea / viewportArea) > 0.3;
+        // Also accept elements with a semi-transparent backdrop (common modal pattern)
+        const hasBackdrop = style.backgroundColor &&
+            (style.backgroundColor.includes('rgba') && !style.backgroundColor.includes('rgba(0, 0, 0, 0)')) ||
+            (el.getAttribute('aria-modal') === 'true');
+
+        if ((coversSignificantArea || hasBackdrop) &&
+            el.querySelector('button, a, [role="button"], input')) {
           return el;
         }
       }
@@ -541,7 +556,7 @@ function isVisibleForMap(el) {
 function extractLinks() {
   const links = [];
   document.querySelectorAll('a[href]').forEach((el, i) => {
-    if (i < 20 && el.offsetParent !== null) {
+    if (i < 20 && isVisible(el)) {
       const href = el.href;
       const text = el.textContent.trim();
       if (href && text && !href.startsWith('javascript:') && text.length < 100) {
@@ -555,7 +570,7 @@ function extractLinks() {
 function extractNavigation() {
   const nav = [];
   document.querySelectorAll('nav a, .menu a, .sidebar a, #adminmenu a').forEach((el, i) => {
-    if (i < 15 && el.offsetParent !== null) {
+    if (i < 15 && isVisible(el)) {
       const text = el.textContent.trim();
       if (text && text.length < 50) {
         nav.push(text);
@@ -581,9 +596,18 @@ function isInViewport(el) {
 }
 
 function isVisible(el) {
-  if (!el.offsetParent && el.tagName !== 'BODY') return false;
+  // offsetParent is null for hidden elements, but also for fixed/sticky positioned
+  // elements and the <body>. Check tagName and position to avoid false negatives.
+  if (!el.offsetParent && el.tagName !== 'BODY') {
+    const pos = window.getComputedStyle(el).position;
+    if (pos !== 'fixed' && pos !== 'sticky') return false;
+  }
   const style = window.getComputedStyle(el);
-  return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+  if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+  // Catch zero-size elements (e.g. sr-only / visually-hidden patterns)
+  const rect = el.getBoundingClientRect();
+  if (rect.width === 0 && rect.height === 0) return false;
+  return true;
 }
 
 function simulateRealClick(element) {
@@ -591,6 +615,13 @@ function simulateRealClick(element) {
   const x = rect.left + rect.width / 2;
   const y = rect.top + rect.height / 2;
   const eventOpts = { bubbles: true, cancelable: true, clientX: x, clientY: y, view: window };
+
+  // Focus the element first — some frameworks (MUI, Ant Design) gate click
+  // handlers on focus state, and focus-dependent UI (e.g. dropdowns that close
+  // on blur) requires the focus event to fire before the click.
+  if (typeof element.focus === 'function') {
+    element.focus({ preventScroll: true });
+  }
 
   // Dispatch full pointer/mouse event sequence — required by React, Angular, and modern SPAs
   element.dispatchEvent(new PointerEvent('pointerdown', eventOpts));
@@ -981,11 +1012,11 @@ function handlePressKey(message, sendResponse) {
     ...modifiers
   };
 
-  // For Escape key, dispatch on document to ensure dialogs/modals catch it.
-  // Many frameworks (Bootstrap, MUI, native <dialog>) listen for Escape on
-  // document or document.body rather than the focused element.
+  // For Escape, dispatch on document first — most dialog/modal frameworks
+  // (Bootstrap, MUI, native <dialog>) listen on document, not the focused element.
+  // For all other keys, dispatch on the focused element.
   const target = (keyValue === 'Escape')
-    ? document.activeElement || document.body
+    ? document
     : document.activeElement || document.body;
 
   // Dispatch keydown
@@ -1027,11 +1058,11 @@ function handlePressKey(message, sendResponse) {
     }
   }
 
-  // For Escape: also dispatch on document and document.body as a fallback so
-  // that dialog/modal listeners that are bound to these targets receive it.
+  // For Escape: also dispatch on activeElement and document.body as fallbacks
+  // so listeners bound to focused elements also receive it.
   if (keyValue === 'Escape') {
-    for (const fallback of [document.body, document]) {
-      if (fallback && fallback !== target) {
+    for (const fallback of [document.activeElement, document.body]) {
+      if (fallback && fallback !== target && fallback !== document) {
         fallback.dispatchEvent(new KeyboardEvent('keydown', eventProps));
         fallback.dispatchEvent(new KeyboardEvent('keyup', eventProps));
       }
