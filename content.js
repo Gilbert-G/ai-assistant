@@ -16,16 +16,18 @@ console.log('[Manureva Content] Script loaded');
 // DOMAIN SAFETY CHECK (defense-in-depth)
 // ============================================================================
 const SENSITIVE_DOMAIN_PATTERNS = [
-  /bank|banking|chase|wellsfargo|bofa|citi|hsbc|barclays/i,
-  /paypal|venmo|stripe\.com|square\.com/i,
+  // Match against hostname only (not full URL) to avoid false positives
+  // like foodbank.org, electricity.gov, citibike.com, etc.
+  /\b(bank|banking)\b|chase\.com|wellsfargo\.com|bofa\.com|citibank\.com|hsbc\.|barclays\./i,
+  /paypal\.com|venmo\.com|stripe\.com|square\.com/i,
   /signin\.aws|console\.aws/i,
   /accounts\.google|myaccount\.google/i,
   /login\.microsoft|portal\.azure/i
 ];
 
 function isOnSensitiveDomain() {
-  const url = window.location.href;
-  return SENSITIVE_DOMAIN_PATTERNS.some(pattern => pattern.test(url));
+  const hostname = window.location.hostname;
+  return SENSITIVE_DOMAIN_PATTERNS.some(pattern => pattern.test(hostname));
 }
 
 // ============================================================================
@@ -447,6 +449,10 @@ function detectActiveOverlay() {
   }
 
   // 4. Full-screen fixed/sticky elements with high z-index (generic modal detection)
+  // Must cover a significant portion of the viewport to be an overlay — this
+  // prevents normal navbars/headers (which are fixed but narrow) from being
+  // misidentified as blocking overlays.
+  const viewportArea = window.innerWidth * window.innerHeight;
   const topLevelDivs = document.querySelectorAll('body > div, body > aside, body > section');
   for (const el of topLevelDivs) {
     try {
@@ -458,8 +464,17 @@ function detectActiveOverlay() {
           parseInt(style.zIndex) > 100 &&
           el.offsetHeight > 80 &&
           el.offsetWidth > 200) {
-        // Check it contains at least one interactive element (not just a floating header/nav)
-        if (el.querySelector('button, a, [role="button"], input')) {
+        const elArea = el.offsetWidth * el.offsetHeight;
+        // Must cover at least 30% of the viewport to qualify as a blocking overlay.
+        // Navbars/headers typically cover < 15% of the viewport.
+        const coversSignificantArea = viewportArea > 0 && (elArea / viewportArea) > 0.3;
+        // Also accept elements with a semi-transparent backdrop (common modal pattern)
+        const hasBackdrop = style.backgroundColor &&
+            (style.backgroundColor.includes('rgba') && !style.backgroundColor.includes('rgba(0, 0, 0, 0)')) ||
+            (el.getAttribute('aria-modal') === 'true');
+
+        if ((coversSignificantArea || hasBackdrop) &&
+            el.querySelector('button, a, [role="button"], input')) {
           return el;
         }
       }
@@ -541,7 +556,7 @@ function isVisibleForMap(el) {
 function extractLinks() {
   const links = [];
   document.querySelectorAll('a[href]').forEach((el, i) => {
-    if (i < 20 && el.offsetParent !== null) {
+    if (i < 20 && isVisible(el)) {
       const href = el.href;
       const text = el.textContent.trim();
       if (href && text && !href.startsWith('javascript:') && text.length < 100) {
@@ -555,7 +570,7 @@ function extractLinks() {
 function extractNavigation() {
   const nav = [];
   document.querySelectorAll('nav a, .menu a, .sidebar a, #adminmenu a').forEach((el, i) => {
-    if (i < 15 && el.offsetParent !== null) {
+    if (i < 15 && isVisible(el)) {
       const text = el.textContent.trim();
       if (text && text.length < 50) {
         nav.push(text);
@@ -581,9 +596,18 @@ function isInViewport(el) {
 }
 
 function isVisible(el) {
-  if (!el.offsetParent && el.tagName !== 'BODY') return false;
+  // offsetParent is null for hidden elements, but also for fixed/sticky positioned
+  // elements and the <body>. Check tagName and position to avoid false negatives.
+  if (!el.offsetParent && el.tagName !== 'BODY') {
+    const pos = window.getComputedStyle(el).position;
+    if (pos !== 'fixed' && pos !== 'sticky') return false;
+  }
   const style = window.getComputedStyle(el);
-  return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+  if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+  // Catch zero-size elements (e.g. sr-only / visually-hidden patterns)
+  const rect = el.getBoundingClientRect();
+  if (rect.width === 0 && rect.height === 0) return false;
+  return true;
 }
 
 function simulateRealClick(element) {
@@ -591,6 +615,13 @@ function simulateRealClick(element) {
   const x = rect.left + rect.width / 2;
   const y = rect.top + rect.height / 2;
   const eventOpts = { bubbles: true, cancelable: true, clientX: x, clientY: y, view: window };
+
+  // Focus the element first — some frameworks (MUI, Ant Design) gate click
+  // handlers on focus state, and focus-dependent UI (e.g. dropdowns that close
+  // on blur) requires the focus event to fire before the click.
+  if (typeof element.focus === 'function') {
+    element.focus({ preventScroll: true });
+  }
 
   // Dispatch full pointer/mouse event sequence — required by React, Angular, and modern SPAs
   element.dispatchEvent(new PointerEvent('pointerdown', eventOpts));
@@ -612,6 +643,15 @@ function handleClick(message, sendResponse) {
     if (candidate && document.body.contains(candidate) &&
         (candidate.tagName === 'OPTION' || isVisible(candidate))) {
       element = candidate;
+    } else if (candidate) {
+      // Element went stale (SPA re-render). Rebuild the map and retry once.
+      console.log('[Content] Stale element at index', idx, '— rebuilding element map');
+      buildElementMap();
+      const refreshed = window.__manurevaElements[idx];
+      if (refreshed && document.body.contains(refreshed) &&
+          (refreshed.tagName === 'OPTION' || isVisible(refreshed))) {
+        element = refreshed;
+      }
     }
   }
 
@@ -735,29 +775,33 @@ function handleClick(message, sendResponse) {
   }
 
   if (element) {
+    // Scroll into view first
+    element.scrollIntoView({ behavior: 'instant', block: 'center' });
+
     // Visual feedback
     showClickFeedback(element);
 
-    // Scroll into view
-    element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-
-    // Send response BEFORE the delayed click — if the click triggers a page
-    // navigation, the content script is destroyed and sendResponse would be lost.
+    // Perform the click synchronously so the response reflects the actual outcome.
+    // We must send the response AFTER clicking but BEFORE any resulting page
+    // navigation destroys the content script. Using a microtask (Promise.resolve)
+    // ensures the click runs first while sendResponse still works.
     const clickedText = element.textContent?.trim().substring(0, 50);
-    sendResponse({ success: true, clicked: clickedText });
 
-    // Click after a small delay for visual effect
-    setTimeout(() => {
+    try {
       simulateRealClick(element);
-    }, 300);
+      sendResponse({ success: true, clicked: clickedText });
+    } catch (err) {
+      sendResponse({ success: false, error: err.message });
+    }
   } else {
-    sendResponse({ success: false, error: `Element not found: ${selector || text}` });
+    sendResponse({ success: false, error: `Element not found: ${selector || text || description}` });
   }
 }
 
 function handleScroll(message, sendResponse) {
   const { direction, amount, to } = message;
-  
+  const scrollBefore = window.scrollY;
+
   if (to === 'bottom') {
     window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
   } else if (to === 'top') {
@@ -767,12 +811,17 @@ function handleScroll(message, sendResponse) {
   } else if (direction === 'up') {
     window.scrollBy({ top: -(amount || 500), behavior: 'smooth' });
   }
-  
-  sendResponse({ success: true });
+
+  // Check if scroll position actually changed after a short delay
+  // (smooth scrolling is async, so we check after a brief wait)
+  setTimeout(() => {
+    const scrolled = window.scrollY !== scrollBefore;
+    sendResponse({ success: true, scrolled });
+  }, 100);
 }
 
 function handleType(message, sendResponse) {
-  const { selector, text, index } = message;
+  const { selector, text, index, clear } = message;
   let input = null;
 
   // Priority 0: Index-based lookup (from element map)
@@ -782,6 +831,14 @@ function handleType(message, sendResponse) {
     // Verify element is still in DOM and visible (guards against stale references)
     if (candidate && document.body.contains(candidate) && isVisible(candidate)) {
       input = candidate;
+    } else if (candidate) {
+      // Element went stale (SPA re-render). Rebuild the map and retry once.
+      console.log('[Content] Stale element at index', idx, '— rebuilding element map');
+      buildElementMap();
+      const refreshed = window.__manurevaElements[idx];
+      if (refreshed && document.body.contains(refreshed) && isVisible(refreshed)) {
+        input = refreshed;
+      }
     }
   }
 
@@ -811,19 +868,32 @@ function handleType(message, sendResponse) {
 
   input.focus();
 
-  // Clear existing value
-  if (['INPUT', 'TEXTAREA'].includes(input.tagName)) {
-    const prototype = input.tagName === 'TEXTAREA'
-      ? HTMLTextAreaElement.prototype
-      : HTMLInputElement.prototype;
-    const nativeSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
-    if (nativeSetter) {
-      nativeSetter.call(input, '');
-    } else {
-      input.value = '';
+  // Clear existing value unless clear="false" (allows appending to existing text)
+  const shouldClear = clear !== 'false' && clear !== false;
+  if (shouldClear) {
+    if (['INPUT', 'TEXTAREA'].includes(input.tagName)) {
+      const prototype = input.tagName === 'TEXTAREA'
+        ? HTMLTextAreaElement.prototype
+        : HTMLInputElement.prototype;
+      const nativeSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+      if (nativeSetter) {
+        nativeSetter.call(input, '');
+      } else {
+        input.value = '';
+      }
+    } else if (input.hasAttribute('contenteditable')) {
+      input.textContent = '';
     }
-  } else if (input.hasAttribute('contenteditable')) {
-    input.textContent = '';
+  }
+
+  // Capture the current value prefix for append mode
+  let existingValue = '';
+  if (!shouldClear) {
+    if (['INPUT', 'TEXTAREA'].includes(input.tagName)) {
+      existingValue = input.value || '';
+    } else if (input.hasAttribute('contenteditable')) {
+      existingValue = input.textContent || '';
+    }
   }
 
   // Simulate per-character keyboard input — required for SPA autocomplete/search.
@@ -832,28 +902,37 @@ function handleType(message, sendResponse) {
   for (let i = 0; i < text.length; i++) {
     const char = text[i];
 
+    // Derive the correct KeyboardEvent.code for each character
+    let charCode;
+    if (char >= 'a' && char <= 'z') charCode = 'Key' + char.toUpperCase();
+    else if (char >= 'A' && char <= 'Z') charCode = 'Key' + char;
+    else if (char >= '0' && char <= '9') charCode = 'Digit' + char;
+    else if (char === ' ') charCode = 'Space';
+    else charCode = '';  // punctuation/symbols — code varies by keyboard layout
+
     input.dispatchEvent(new KeyboardEvent('keydown', {
-      key: char, code: `Key${char.toUpperCase()}`,
+      key: char, code: charCode,
       bubbles: true, cancelable: true
     }));
     input.dispatchEvent(new KeyboardEvent('keypress', {
-      key: char, code: `Key${char.toUpperCase()}`,
+      key: char, code: charCode,
       bubbles: true, cancelable: true
     }));
 
-    // Append character to value
+    // Append character to value (preserve existingValue in append mode)
+    const newValue = existingValue + text.substring(0, i + 1);
     if (['INPUT', 'TEXTAREA'].includes(input.tagName)) {
       const prototype = input.tagName === 'TEXTAREA'
         ? HTMLTextAreaElement.prototype
         : HTMLInputElement.prototype;
       const nativeSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
       if (nativeSetter) {
-        nativeSetter.call(input, text.substring(0, i + 1));
+        nativeSetter.call(input, newValue);
       } else {
-        input.value = text.substring(0, i + 1);
+        input.value = newValue;
       }
     } else if (input.hasAttribute('contenteditable')) {
-      input.textContent = text.substring(0, i + 1);
+      input.textContent = newValue;
     }
 
     // Fire InputEvent with proper properties for framework compatibility
@@ -865,7 +944,7 @@ function handleType(message, sendResponse) {
     }));
 
     input.dispatchEvent(new KeyboardEvent('keyup', {
-      key: char, code: `Key${char.toUpperCase()}`,
+      key: char, code: charCode,
       bubbles: true, cancelable: true
     }));
   }
@@ -947,11 +1026,11 @@ function handlePressKey(message, sendResponse) {
     ...modifiers
   };
 
-  // For Escape key, dispatch on document to ensure dialogs/modals catch it.
-  // Many frameworks (Bootstrap, MUI, native <dialog>) listen for Escape on
-  // document or document.body rather than the focused element.
+  // For Escape, dispatch on document first — most dialog/modal frameworks
+  // (Bootstrap, MUI, native <dialog>) listen on document, not the focused element.
+  // For all other keys, dispatch on the focused element.
   const target = (keyValue === 'Escape')
-    ? document.activeElement || document.body
+    ? document
     : document.activeElement || document.body;
 
   // Dispatch keydown
@@ -975,11 +1054,29 @@ function handlePressKey(message, sendResponse) {
   // Dispatch keyup
   target.dispatchEvent(new KeyboardEvent('keyup', eventProps));
 
-  // For Escape: also dispatch on document and document.body as a fallback so
-  // that dialog/modal listeners that are bound to these targets receive it.
+  // For Enter: trigger form submission if the target is inside a form.
+  // Synthetic keyboard events do not replicate the browser's built-in
+  // "pressing Enter submits the form" behavior.
+  if (keyValue === 'Enter' && !modifiers.shiftKey) {
+    const form = target.closest?.('form');
+    if (form) {
+      // Use requestSubmit() which fires the submit event and runs validation,
+      // unlike form.submit() which bypasses both.
+      try {
+        if (typeof form.requestSubmit === 'function') {
+          form.requestSubmit();
+        }
+      } catch (e) {
+        // requestSubmit can throw if the form is invalid; that's fine
+      }
+    }
+  }
+
+  // For Escape: also dispatch on activeElement and document.body as fallbacks
+  // so listeners bound to focused elements also receive it.
   if (keyValue === 'Escape') {
-    for (const fallback of [document.body, document]) {
-      if (fallback && fallback !== target) {
+    for (const fallback of [document.activeElement, document.body]) {
+      if (fallback && fallback !== target && fallback !== document) {
         fallback.dispatchEvent(new KeyboardEvent('keydown', eventProps));
         fallback.dispatchEvent(new KeyboardEvent('keyup', eventProps));
       }

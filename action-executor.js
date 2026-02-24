@@ -350,8 +350,7 @@ async function executeDomAction(action) {
 
   switch (action.type) {
     case 'click':
-      state.clickCount++;
-      addSystemNotice(`\u{1F5B1}\uFE0F Click ${state.clickCount}/${MAX_CLICKS_PER_MISSION}: ${action.text || action.selector || action.description}`);
+      addSystemNotice(`\u{1F5B1}\uFE0F Click: ${action.text || action.selector || action.description}`);
       logAction('click', action.text || action.selector, 'started');
 
       const urlBefore = (await sendToBackground({ type: 'GET_TAB_INFO', tabId: state.currentTabId }))?.url;
@@ -390,10 +389,10 @@ async function executeDomAction(action) {
           });
         }
 
-        result.executed = true;
-
         if (clickResult?.success) {
-          addSystemNotice(`\u2705 Clicked`);
+          state.clickCount++;
+          result.executed = true;
+          addSystemNotice(`\u2705 Clicked (${state.clickCount}/${MAX_CLICKS_PER_MISSION})`);
           logAction('click', action.text || action.selector, 'success');
 
           await new Promise(resolve => setTimeout(resolve, 2000));
@@ -404,7 +403,7 @@ async function executeDomAction(action) {
             addSystemNotice(`\u{1F4C4} Page changed`);
           }
         } else {
-          addSystemNotice(`\u26A0\uFE0F Click failed`);
+          addSystemNotice(`\u26A0\uFE0F Click failed: ${clickResult?.error || 'element not found'}`);
           logAction('click', action.text || action.selector, 'failed');
         }
       } catch (err) {
@@ -413,13 +412,12 @@ async function executeDomAction(action) {
       break;
 
     case 'scroll':
-      state.scrollCount++;
       const scrollDesc = action.to || `${action.direction} ${action.amount || 300}px`;
-      addSystemNotice(`\u{1F4DC} Scroll ${state.scrollCount}/${MAX_SCROLLS_PER_MISSION}: ${scrollDesc}`);
+      addSystemNotice(`\u{1F4DC} Scroll: ${scrollDesc}`);
       logAction('scroll', scrollDesc, 'started');
 
       try {
-        await sendToBackground({
+        const scrollResult = await sendToBackground({
           type: 'EXECUTE_IN_TAB',
           tabId: state.currentTabId,
           action: {
@@ -430,37 +428,55 @@ async function executeDomAction(action) {
           }
         });
 
-        result.executed = true;
-        await new Promise(resolve => setTimeout(resolve, 800));
-        addSystemNotice(`\u2705 Scrolled`);
-        logAction('scroll', scrollDesc, 'success');
+        if (scrollResult?.success) {
+          state.scrollCount++;
+          result.executed = true;
+          await new Promise(resolve => setTimeout(resolve, 800));
+
+          if (scrollResult.scrolled === false) {
+            addSystemNotice(`\u26A0\uFE0F Already at ${action.to || action.direction} limit`);
+          } else {
+            addSystemNotice(`\u2705 Scrolled (${state.scrollCount}/${MAX_SCROLLS_PER_MISSION})`);
+          }
+          logAction('scroll', scrollDesc, 'success');
+        } else {
+          addSystemNotice(`\u26A0\uFE0F Scroll failed: ${scrollResult?.error || 'unknown'}`);
+          logAction('scroll', scrollDesc, 'failed');
+        }
       } catch (err) {
+        addSystemNotice(`\u26A0\uFE0F Scroll failed: ${err.message}`);
         logAction('scroll', scrollDesc, 'failed');
       }
       break;
 
     case 'type':
-      state.typeCount++;
-      addSystemNotice(`\u2328\uFE0F Type ${state.typeCount}/${MAX_TYPES_PER_MISSION}: "${action.text}"`);
+      addSystemNotice(`\u2328\uFE0F Type: "${action.text}"`);
       logAction('type', action.text, 'started');
 
       try {
-        await sendToBackground({
+        const typeResult = await sendToBackground({
           type: 'EXECUTE_IN_TAB',
           tabId: state.currentTabId,
           action: {
             type: 'TYPE',
             index: action.index,
             selector: action.selector,
-            text: action.text
+            text: action.text,
+            clear: action.clear
           }
         });
 
-        result.executed = true;
-        // Wait for autocomplete/dropdown to appear after typing
-        await new Promise(resolve => setTimeout(resolve, 1500));
-        addSystemNotice(`\u2705 Typed`);
-        logAction('type', action.text, 'success');
+        if (typeResult?.success) {
+          state.typeCount++;
+          result.executed = true;
+          // Wait for autocomplete/dropdown to appear after typing
+          await new Promise(resolve => setTimeout(resolve, 1500));
+          addSystemNotice(`\u2705 Typed (${state.typeCount}/${MAX_TYPES_PER_MISSION})`);
+          logAction('type', action.text, 'success');
+        } else {
+          addSystemNotice(`\u26A0\uFE0F Type failed: ${typeResult?.error || 'no input field'}`);
+          logAction('type', action.text, 'failed');
+        }
       } catch (err) {
         logAction('type', action.text, 'failed');
       }
@@ -471,7 +487,7 @@ async function executeDomAction(action) {
       logAction('pressKey', action.key, 'started');
 
       try {
-        await sendToBackground({
+        const keyResult = await sendToBackground({
           type: 'EXECUTE_IN_TAB',
           tabId: state.currentTabId,
           action: {
@@ -484,10 +500,17 @@ async function executeDomAction(action) {
           }
         });
 
-        result.executed = true;
-        await new Promise(resolve => setTimeout(resolve, 500));
-        logAction('pressKey', action.key, 'success');
+        if (keyResult?.success) {
+          result.executed = true;
+          await new Promise(resolve => setTimeout(resolve, 500));
+          addSystemNotice(`\u2705 Key pressed: ${action.key}`);
+          logAction('pressKey', action.key, 'success');
+        } else {
+          addSystemNotice(`\u26A0\uFE0F Key press failed: ${keyResult?.error || 'unknown'}`);
+          logAction('pressKey', action.key, 'failed');
+        }
       } catch (err) {
+        addSystemNotice(`\u26A0\uFE0F Key press failed: ${err.message}`);
         logAction('pressKey', action.key, 'failed');
       }
       break;

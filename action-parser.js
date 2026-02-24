@@ -4,24 +4,42 @@
 function parseAllActions(content) {
   const actions = [];
 
-  // Supports: <action attr="value" /> and <action attr="value">inner</action>
-  const tagRegex = /<(navigate|click|scroll|type|pressKey|wait|read|verify|observe|switchTab|storeContext|analyze|continue|todo)\s*([^>]*?)(?:\/>|>([^<]*)<\/\1>)/gi;
+  // Match self-closing tags: <action attr="value" />
+  const selfClosingRegex = /<(navigate|click|scroll|type|pressKey|wait|read|verify|observe|switchTab|storeContext|analyze|continue|todo)\s+([^>]*?)\/>/gi;
+
+  // Match tags with inner content: <action attr="value">...content...</action>
+  // Uses [\s\S]*? (non-greedy any-char including newlines) instead of [^<]* to
+  // handle inner content that may contain < characters.
+  const withContentRegex = /<(navigate|click|scroll|type|pressKey|wait|read|verify|observe|switchTab|storeContext|analyze|continue|todo)\s*([^>]*?)>([\s\S]*?)<\/\1>/gi;
 
   let match;
-  while ((match = tagRegex.exec(content)) !== null) {
+
+  // Pass 1: Self-closing tags
+  while ((match = selfClosingRegex.exec(content)) !== null) {
+    const type = match[1].toLowerCase();
+    const attrString = match[2] || '';
+    const attrs = parseAttributes(attrString);
+    actions.push({ type, ...attrs, _offset: match.index });
+  }
+
+  // Pass 2: Tags with inner content
+  while ((match = withContentRegex.exec(content)) !== null) {
     const type = match[1].toLowerCase();
     const attrString = match[2] || '';
     const innerContent = match[3] || '';
-
     const attrs = parseAttributes(attrString);
 
-    // Handle todo with inner content
+    // Handle todo with inner content (list of items)
     if (type === 'todo' && innerContent) {
       attrs.items = innerContent.trim().split('\n').map(l => l.trim()).filter(l => l);
     }
 
-    actions.push({ type, ...attrs });
+    actions.push({ type, ...attrs, _offset: match.index });
   }
+
+  // Sort by position in content to preserve original order, then drop _offset
+  actions.sort((a, b) => a._offset - b._offset);
+  actions.forEach(a => delete a._offset);
 
   return actions;
 }

@@ -164,13 +164,31 @@ function setupEventListeners() {
   });
 
   // Invalidate stale tab references when tabs are closed
-  chrome.tabs.onRemoved.addListener((tabId) => {
+  chrome.tabs.onRemoved.addListener(async (tabId) => {
     state.openTabs.delete(tabId);
-    if (state.currentTabId === tabId) {
+
+    const wasPrimary = state.primaryTabId === tabId;
+    const wasCurrent = state.currentTabId === tabId;
+
+    if (wasPrimary) {
+      state.primaryTabId = null;
+    }
+    if (wasCurrent) {
+      // Fall back to another known tab, or query the browser for the active tab
       state.currentTabId = state.primaryTabId;
     }
-    if (state.primaryTabId === tabId) {
-      state.primaryTabId = null;
+
+    // If we lost the primary tab, try to recover by adopting the active tab
+    if (wasPrimary || (wasCurrent && !state.currentTabId)) {
+      try {
+        const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (activeTab) {
+          if (!state.primaryTabId) state.primaryTabId = activeTab.id;
+          if (!state.currentTabId) state.currentTabId = activeTab.id;
+        }
+      } catch (e) {
+        // Browser query failed — will recover on next user action
+      }
     }
   });
 }
@@ -301,7 +319,11 @@ async function handleSendMessage() {
   await sendMessageToAssistant(userMessage, true);
 }
 
+// Track recursion depth so only the outermost call resets isProcessing
+let _sendMessageDepth = 0;
+
 async function sendMessageToAssistant(message, isUserInitiated = true) {
+  _sendMessageDepth++;
   state.isProcessing = true;
   elements.sendBtn.disabled = true;
 
@@ -451,10 +473,31 @@ async function sendMessageToAssistant(message, isUserInitiated = true) {
     }
     addErrorMessage(error.message);
     console.error('[Sidepanel] Error:', error);
-  }
+  } finally {
+    _sendMessageDepth--;
 
-  state.isProcessing = false;
-  elements.sendBtn.disabled = false;
+    // Only the outermost call (depth 0) should restore UI state.
+    // Recursive calls from the agentic continuation loop must NOT reset
+    // isProcessing, otherwise the user could press Send mid-mission.
+    if (_sendMessageDepth <= 0) {
+      _sendMessageDepth = 0; // safety clamp
+      state.isProcessing = false;
+      elements.sendBtn.disabled = false;
+
+      // Sync currentTabId with the browser's actually-active tab.
+      // During processing, the onActivated listener ignores tab switches to
+      // prevent interference. Now that processing is done, we need to pick up
+      // any tab changes that occurred in the meantime.
+      try {
+        const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (activeTab) {
+          state.currentTabId = activeTab.id;
+        }
+      } catch (e) {
+        // Non-critical — keep existing currentTabId
+      }
+    }
+  }
 }
 
 // ============================================================================
