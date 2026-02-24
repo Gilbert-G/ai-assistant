@@ -140,6 +140,16 @@ function setupEventListeners() {
   elements.saveApiKey.addEventListener('click', saveApiKey);
   elements.resetBtn.addEventListener('click', resetMission);
 
+  // Close settings panel with Escape key
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      if (!elements.settingsPanel.classList.contains('hidden')) {
+        e.preventDefault();
+        toggleSettings();
+      }
+    }
+  });
+
   chrome.runtime.onMessage.addListener((message) => {
     if (message.type === 'TAB_UPDATED') {
       handleTabUpdate(message);
