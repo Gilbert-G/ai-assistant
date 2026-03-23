@@ -237,6 +237,7 @@ function formatAssistantContent(content) {
 
   const ACTION_ICONS = {
     navigate: '\u{1F680}', click: '\u{1F5B1}\uFE0F', scroll: '\u{1F4DC}', type: '\u2328\uFE0F', pressKey: '\u2328\uFE0F',
+    setSlider: '\u{1F39A}\uFE0F',
     wait: '\u23F3', read: '\u{1F441}\uFE0F', verify: '\u2713', observe: '\u{1F441}\uFE0F', storeContext: '\u{1F4BE}',
     switchTab: '\u{1F504}', analyze: '\u{1F50D}', continue: '\u25B6\uFE0F', todo: '\u{1F4DD}'
   };
@@ -254,6 +255,7 @@ function formatAssistantContent(content) {
     else if (attrs.text) summary = `${actionType} \u2192 "${attrs.text}"`;
     else if (attrs.direction) summary = `scroll ${attrs.direction}`;
     else if (attrs.key) summary = `pressKey: ${attrs.key}`;
+    else if (attrs.value && actionType.toLowerCase() === 'setslider') summary = `setSlider \u2192 ${attrs.value}`;
     else if (attrs.purpose) summary = `${actionType}: ${attrs.purpose.substring(0, 30)}`;
 
     actionBlocks.push({ type: actionType.toLowerCase(), summary });
@@ -288,8 +290,24 @@ function formatAssistantContent(content) {
       if (inCodeBlock) {
         const pre = document.createElement('pre');
         const code = document.createElement('code');
-        code.textContent = codeLines.join('\n');
+        const codeText = codeLines.join('\n');
+        code.textContent = codeText;
         pre.appendChild(code);
+        // Add copy button
+        const copyBtn = document.createElement('button');
+        copyBtn.className = 'code-copy-btn';
+        copyBtn.textContent = 'Copy';
+        copyBtn.addEventListener('click', () => {
+          navigator.clipboard.writeText(codeText).then(() => {
+            copyBtn.textContent = 'Copied!';
+            copyBtn.classList.add('copied');
+            setTimeout(() => {
+              copyBtn.textContent = 'Copy';
+              copyBtn.classList.remove('copied');
+            }, 2000);
+          });
+        });
+        pre.appendChild(copyBtn);
         container.appendChild(pre);
         codeLines = [];
         inCodeBlock = false;
@@ -321,8 +339,23 @@ function formatAssistantContent(content) {
   if (inCodeBlock && codeLines.length > 0) {
     const pre = document.createElement('pre');
     const code = document.createElement('code');
-    code.textContent = codeLines.join('\n');
+    const codeText = codeLines.join('\n');
+    code.textContent = codeText;
     pre.appendChild(code);
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'code-copy-btn';
+    copyBtn.textContent = 'Copy';
+    copyBtn.addEventListener('click', () => {
+      navigator.clipboard.writeText(codeText).then(() => {
+        copyBtn.textContent = 'Copied!';
+        copyBtn.classList.add('copied');
+        setTimeout(() => {
+          copyBtn.textContent = 'Copy';
+          copyBtn.classList.remove('copied');
+        }, 2000);
+      });
+    });
+    pre.appendChild(copyBtn);
     container.appendChild(pre);
   }
 

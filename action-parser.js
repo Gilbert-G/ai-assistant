@@ -5,12 +5,12 @@ function parseAllActions(content) {
   const actions = [];
 
   // Match self-closing tags: <action attr="value" />
-  const selfClosingRegex = /<(navigate|click|scroll|type|pressKey|wait|read|verify|observe|switchTab|storeContext|analyze|continue|todo)\s+([^>]*?)\/>/gi;
+  const selfClosingRegex = /<(navigate|click|scroll|type|pressKey|setSlider|wait|read|verify|observe|switchTab|storeContext|analyze|continue|todo)\s+([^>]*?)\/>/gi;
 
   // Match tags with inner content: <action attr="value">...content...</action>
   // Uses [\s\S]*? (non-greedy any-char including newlines) instead of [^<]* to
   // handle inner content that may contain < characters.
-  const withContentRegex = /<(navigate|click|scroll|type|pressKey|wait|read|verify|observe|switchTab|storeContext|analyze|continue|todo)\s*([^>]*?)>([\s\S]*?)<\/\1>/gi;
+  const withContentRegex = /<(navigate|click|scroll|type|pressKey|setSlider|wait|read|verify|observe|switchTab|storeContext|analyze|continue|todo)\s*([^>]*?)>([\s\S]*?)<\/\1>/gi;
 
   let match;
 

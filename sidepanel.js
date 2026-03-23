@@ -18,6 +18,7 @@ const state = {
   lastUserMessage: '',
   pendingNavigationUrl: null,
   storedJiraContext: null,
+  pendingImageData: null,
 
   // Action tracking
   clickCount: 0,
@@ -49,6 +50,10 @@ const elements = {
   chatContainer: null,
   userInput: null,
   sendBtn: null,
+  stopBtn: null,
+  voiceBtn: null,
+  uploadBtn: null,
+  fileInput: null,
   settingsBtn: null,
   settingsPanel: null,
   closeSettings: null,
@@ -112,6 +117,10 @@ function initializeElements() {
   elements.saveApiKey = document.getElementById('save-api-key');
   elements.apiKeyStatus = document.getElementById('api-key-status');
   elements.resetBtn = document.getElementById('reset-btn');
+  elements.stopBtn = document.getElementById('stop-btn');
+  elements.voiceBtn = document.getElementById('voice-btn');
+  elements.uploadBtn = document.getElementById('upload-btn');
+  elements.fileInput = document.getElementById('file-input');
   elements.missionBanner = document.getElementById('mission-banner');
   elements.missionGoal = document.getElementById('mission-goal');
   elements.missionProgress = document.getElementById('mission-progress');
@@ -139,6 +148,9 @@ function setupEventListeners() {
   elements.closeSettings.addEventListener('click', toggleSettings);
   elements.saveApiKey.addEventListener('click', saveApiKey);
   elements.resetBtn.addEventListener('click', resetMission);
+  elements.stopBtn.addEventListener('click', stopMission);
+  elements.voiceBtn.addEventListener('click', toggleVoiceInput);
+  elements.fileInput.addEventListener('change', handleFileUpload);
 
   // Close settings panel with Escape key
   document.addEventListener('keydown', (e) => {
@@ -325,6 +337,8 @@ let _sendMessageDepth = 0;
 async function sendMessageToAssistant(message, isUserInitiated = true) {
   _sendMessageDepth++;
   state.isProcessing = true;
+  elements.sendBtn.classList.add('hidden');
+  elements.stopBtn.classList.remove('hidden');
   elements.sendBtn.disabled = true;
 
   // Ensure service worker stays alive during API call
@@ -434,7 +448,26 @@ async function sendMessageToAssistant(message, isUserInitiated = true) {
       console.log('[Sidepanel] Mission type:', state.missionType);
     }
 
-    state.messages.push({ role: 'user', content: message });
+    // Support multimodal messages (text + image)
+    if (state.pendingImageData) {
+      state.messages.push({
+        role: 'user',
+        content: [
+          {
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: state.pendingImageData.media_type,
+              data: state.pendingImageData.data
+            }
+          },
+          { type: 'text', text: message }
+        ]
+      });
+      state.pendingImageData = null;
+    } else {
+      state.messages.push({ role: 'user', content: message });
+    }
     trimMessageHistory();
 
     const response = await sendToBackground({
@@ -482,6 +515,8 @@ async function sendMessageToAssistant(message, isUserInitiated = true) {
     if (_sendMessageDepth <= 0) {
       _sendMessageDepth = 0; // safety clamp
       state.isProcessing = false;
+      elements.sendBtn.classList.remove('hidden');
+      elements.stopBtn.classList.add('hidden');
       elements.sendBtn.disabled = false;
 
       // Sync currentTabId with the browser's actually-active tab.
@@ -569,6 +604,134 @@ async function resetMission() {
         <p class="hint">Tell me what you'd like to accomplish!</p>
       </div>
     `;
+  }
+}
+
+// ============================================================================
+// STOP MISSION
+// ============================================================================
+function stopMission() {
+  if (!state.isProcessing) return;
+
+  console.log('[Sidepanel] STOP requested by user');
+  state.isProcessing = false;
+  _sendMessageDepth = 0;
+  loopCount = MAX_LOOP_ITERATIONS + 1; // Prevent further continuations
+
+  elements.sendBtn.classList.remove('hidden');
+  elements.stopBtn.classList.add('hidden');
+  elements.sendBtn.disabled = false;
+
+  addSystemNotice('\u23F9\uFE0F Stopped by user');
+}
+
+// ============================================================================
+// VOICE INPUT (Web Speech API)
+// ============================================================================
+let speechRecognition = null;
+
+function toggleVoiceInput() {
+  if (speechRecognition) {
+    speechRecognition.stop();
+    return;
+  }
+
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    addSystemNotice('\u26A0\uFE0F Voice input not supported in this browser');
+    return;
+  }
+
+  speechRecognition = new SpeechRecognition();
+  speechRecognition.lang = 'fr-FR'; // Default to French since the user speaks French
+  speechRecognition.interimResults = true;
+  speechRecognition.continuous = false;
+
+  elements.voiceBtn.classList.add('active');
+
+  speechRecognition.onresult = (event) => {
+    const transcript = Array.from(event.results)
+      .map(result => result[0].transcript)
+      .join('');
+    elements.userInput.value = transcript;
+    elements.userInput.style.height = 'auto';
+    elements.userInput.style.height = Math.min(elements.userInput.scrollHeight, 200) + 'px';
+  };
+
+  speechRecognition.onend = () => {
+    elements.voiceBtn.classList.remove('active');
+    speechRecognition = null;
+  };
+
+  speechRecognition.onerror = (event) => {
+    console.warn('[Sidepanel] Speech recognition error:', event.error);
+    elements.voiceBtn.classList.remove('active');
+    speechRecognition = null;
+    if (event.error !== 'aborted') {
+      addSystemNotice(`\u26A0\uFE0F Voice error: ${event.error}`);
+    }
+  };
+
+  speechRecognition.start();
+}
+
+// ============================================================================
+// FILE UPLOAD
+// ============================================================================
+async function handleFileUpload(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+
+  // Reset input so same file can be re-uploaded
+  event.target.value = '';
+
+  const maxSize = 5 * 1024 * 1024; // 5MB
+  if (file.size > maxSize) {
+    addSystemNotice(`\u26A0\uFE0F File too large (max 5MB): ${file.name}`);
+    return;
+  }
+
+  try {
+    if (file.type.startsWith('image/')) {
+      // Convert image to base64 and send as context
+      const reader = new FileReader();
+      reader.onload = () => {
+        const base64 = reader.result;
+        const userMsg = elements.userInput.value.trim();
+        const message = userMsg
+          ? `${userMsg}\n\n[Uploaded image: ${file.name}]`
+          : `Please analyze this image: ${file.name}`;
+
+        // Store the image data for the API call
+        state.pendingImageData = {
+          type: 'image',
+          media_type: file.type,
+          data: base64.split(',')[1], // Remove data:... prefix
+          filename: file.name
+        };
+
+        elements.userInput.value = message;
+        elements.userInput.style.height = 'auto';
+        elements.userInput.style.height = Math.min(elements.userInput.scrollHeight, 200) + 'px';
+        addSystemNotice(`\u{1F4CE} Image attached: ${file.name}`);
+      };
+      reader.readAsDataURL(file);
+    } else {
+      // Read text files
+      const text = await file.text();
+      const truncated = text.length > 10000 ? text.substring(0, 10000) + '\n...(truncated)' : text;
+      const userMsg = elements.userInput.value.trim();
+      const message = userMsg
+        ? `${userMsg}\n\n--- File: ${file.name} ---\n${truncated}`
+        : `Please analyze this file:\n\n--- File: ${file.name} ---\n${truncated}`;
+
+      elements.userInput.value = message;
+      elements.userInput.style.height = 'auto';
+      elements.userInput.style.height = Math.min(elements.userInput.scrollHeight, 200) + 'px';
+      addSystemNotice(`\u{1F4CE} File attached: ${file.name}`);
+    }
+  } catch (err) {
+    addSystemNotice(`\u26A0\uFE0F Failed to read file: ${err.message}`);
   }
 }
 

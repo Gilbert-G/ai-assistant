@@ -71,6 +71,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         handlePressKey(message, sendResponse);
         break;
 
+      case 'SET_SLIDER_VALUE':
+        handleSetSliderValue(message, sendResponse);
+        break;
+
       case 'OBSERVE':
         const observation = extractPageContent();
         sendResponse({ success: true, data: observation });
@@ -396,6 +400,14 @@ function describeElement(el) {
   if (['INPUT', 'TEXTAREA'].includes(el.tagName) && el.value) {
     desc += ' value="' + el.value.substring(0, 40) + '"';
   }
+
+  // For sliders/range inputs, show min/max/step so the AI can set values directly
+  if (el.tagName === 'INPUT' && (el.getAttribute('type') || '').toLowerCase() === 'range') {
+    const min = el.getAttribute('min') || '0';
+    const max = el.getAttribute('max') || '100';
+    const step = el.getAttribute('step') || '1';
+    desc += ` [range: ${min}-${max}, step=${step}]`;
+  }
   if (el.tagName === 'SELECT' && el.selectedOptions?.length > 0) {
     desc += ' value="' + el.selectedOptions[0].text.trim().substring(0, 40) + '"';
   }
@@ -427,7 +439,7 @@ function detectActiveOverlay() {
   const ariaDialog = document.querySelector('[role="dialog"]:not([aria-hidden="true"]), [role="alertdialog"]:not([aria-hidden="true"])');
   if (ariaDialog && isVisible(ariaDialog)) return ariaDialog;
 
-  // 3. Common modal/overlay CSS patterns
+  // 3. Common modal/overlay CSS patterns (including WordPress-specific ones)
   const overlaySelectors = [
     '.modal.show', '.modal.in', '.modal.is-open', '.modal.is-active',
     '.overlay.active', '.overlay.visible',
@@ -438,7 +450,21 @@ function detectActiveOverlay() {
     '[id*="gdpr"]', '[class*="gdpr"]',
     '[class*="CookieConsent"]', '[id*="CookieConsent"]',
     '[class*="onetrust"]', '[id*="onetrust"]',
-    '[class*="cc-banner"]', '[class*="cc-window"]'
+    '[class*="cc-banner"]', '[class*="cc-window"]',
+    // WordPress-specific overlays and modals
+    '.components-modal__screen-overlay',
+    '.editor-post-publish-panel',
+    '.interface-interface-skeleton__overlay',
+    '[class*="publish-panel"]',
+    '.media-modal',
+    '.wp-dialog',
+    '#TB_overlay',
+    '#TB_window',
+    '.wp-core-ui .notice-dismiss',
+    // Elementor/Divi builder overlays
+    '.elementor-popup-modal',
+    '#et-fb-app .et-fb-modal',
+    '[class*="et_pb_modal"]'
   ];
 
   for (const sel of overlaySelectors) {
@@ -722,7 +748,7 @@ function handleClick(message, sendResponse) {
       if (!isVisible(el)) continue;
 
       const elText = el.textContent.trim().toLowerCase();
-      const elValue = el.value?.toLowerCase() || '';
+      const elValue = (typeof el.value === 'string' ? el.value : String(el.value ?? '')).toLowerCase();
       const elAriaLabel = el.getAttribute('aria-label')?.toLowerCase() || '';
       const elPlaceholder = el.getAttribute('placeholder')?.toLowerCase() || '';
       // Direct text: only the element's own text nodes (not descendants)
@@ -958,6 +984,78 @@ function handleType(message, sendResponse) {
 function handlePressKey(message, sendResponse) {
   const { key, ctrl, shift, alt, meta } = message;
 
+  // Block browser-chrome keys that cannot work from a content script
+  const blockedKeys = ['F12', 'F5', 'F11'];
+  if (blockedKeys.includes(key)) {
+    sendResponse({
+      success: false,
+      error: `Cannot press ${key} from a content script. Browser DevTools and chrome-level shortcuts are not accessible to extensions.`
+    });
+    return;
+  }
+
+  // Special handling: Arrow keys on slider/range inputs need programmatic value changes
+  // because synthetic keyboard events do NOT trigger native range input behavior.
+  const activeEl = document.activeElement;
+  if (activeEl && activeEl.tagName === 'INPUT' &&
+      (activeEl.getAttribute('type') || '').toLowerCase() === 'range' &&
+      ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(key)) {
+    const min = parseFloat(activeEl.min) || 0;
+    const max = parseFloat(activeEl.max) || 100;
+    const step = parseFloat(activeEl.step) || 1;
+    let currentVal = parseFloat(activeEl.value) || 0;
+
+    if (key === 'ArrowRight' || key === 'ArrowUp') {
+      currentVal = Math.min(max, currentVal + step);
+    } else {
+      currentVal = Math.max(min, currentVal - step);
+    }
+
+    // Use native setter to trigger React/framework change detection
+    const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+    if (nativeSetter) {
+      nativeSetter.call(activeEl, String(currentVal));
+    } else {
+      activeEl.value = currentVal;
+    }
+
+    activeEl.dispatchEvent(new Event('input', { bubbles: true }));
+    activeEl.dispatchEvent(new Event('change', { bubbles: true }));
+
+    sendResponse({ success: true, newValue: currentVal });
+    return;
+  }
+
+  // Special handling: Home/End keys in textareas/inputs need programmatic cursor movement
+  // because synthetic keyboard events do NOT move the caret in most browsers.
+  if (activeEl && ['INPUT', 'TEXTAREA'].includes(activeEl.tagName) &&
+      typeof activeEl.setSelectionRange === 'function' &&
+      ['Home', 'End'].includes(key)) {
+    if (key === 'End') {
+      if (activeEl.tagName === 'TEXTAREA') {
+        // Move to end of current line
+        const val = activeEl.value;
+        const pos = activeEl.selectionStart;
+        const lineEnd = val.indexOf('\n', pos);
+        const newPos = lineEnd === -1 ? val.length : lineEnd;
+        activeEl.setSelectionRange(newPos, newPos);
+      } else {
+        activeEl.setSelectionRange(activeEl.value.length, activeEl.value.length);
+      }
+    } else { // Home
+      if (activeEl.tagName === 'TEXTAREA') {
+        const val = activeEl.value;
+        const pos = activeEl.selectionStart;
+        const lineStart = val.lastIndexOf('\n', pos - 1) + 1;
+        activeEl.setSelectionRange(lineStart, lineStart);
+      } else {
+        activeEl.setSelectionRange(0, 0);
+      }
+    }
+    sendResponse({ success: true });
+    return;
+  }
+
   const keyMap = {
     'Return': 'Enter',
     'Enter': 'Enter',
@@ -1090,6 +1188,64 @@ function handlePressKey(message, sendResponse) {
   }
 
   sendResponse({ success: true });
+}
+
+// ============================================================================
+// SLIDER VALUE HANDLER
+// ============================================================================
+function handleSetSliderValue(message, sendResponse) {
+  const { index, selector, value } = message;
+  let element = null;
+
+  // Index-based lookup (preferred)
+  if (index !== undefined && index !== null && window.__manurevaElements) {
+    const idx = parseInt(index);
+    const candidate = window.__manurevaElements[idx];
+    if (candidate && document.body.contains(candidate) && isVisible(candidate)) {
+      element = candidate;
+    } else if (candidate) {
+      buildElementMap();
+      const refreshed = window.__manurevaElements[idx];
+      if (refreshed && document.body.contains(refreshed) && isVisible(refreshed)) {
+        element = refreshed;
+      }
+    }
+  }
+
+  // Fallback: selector
+  if (!element && selector) {
+    element = document.querySelector(selector);
+  }
+
+  if (!element || element.tagName !== 'INPUT' ||
+      (element.getAttribute('type') || '').toLowerCase() !== 'range') {
+    sendResponse({ success: false, error: 'No slider/range input found at that index or selector' });
+    return;
+  }
+
+  const numValue = parseFloat(value);
+  if (isNaN(numValue)) {
+    sendResponse({ success: false, error: 'Invalid slider value: ' + value });
+    return;
+  }
+
+  const min = parseFloat(element.min) || 0;
+  const max = parseFloat(element.max) || 100;
+  const clampedValue = Math.max(min, Math.min(max, numValue));
+
+  // Use native setter for React/framework compatibility
+  const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+  if (nativeSetter) {
+    nativeSetter.call(element, String(clampedValue));
+  } else {
+    element.value = clampedValue;
+  }
+
+  element.dispatchEvent(new Event('input', { bubbles: true }));
+  element.dispatchEvent(new Event('change', { bubbles: true }));
+
+  showClickFeedback(element);
+  sendResponse({ success: true, newValue: clampedValue });
 }
 
 // ============================================================================
