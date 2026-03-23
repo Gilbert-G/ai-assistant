@@ -284,6 +284,12 @@ async function parseAndExecuteActions(content, userMessage = '') {
   });
 
   if (shouldContinue) {
+    // Check if user pressed Stop
+    if (!state.isProcessing) {
+      console.log('[Sidepanel] Stopped by user');
+      return;
+    }
+
     loopCount++;
 
     if (loopCount > MAX_LOOP_ITERATIONS) {

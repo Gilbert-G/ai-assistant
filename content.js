@@ -748,7 +748,7 @@ function handleClick(message, sendResponse) {
       if (!isVisible(el)) continue;
 
       const elText = el.textContent.trim().toLowerCase();
-      const elValue = el.value?.toLowerCase() || '';
+      const elValue = (typeof el.value === 'string' ? el.value : String(el.value ?? '')).toLowerCase();
       const elAriaLabel = el.getAttribute('aria-label')?.toLowerCase() || '';
       const elPlaceholder = el.getAttribute('placeholder')?.toLowerCase() || '';
       // Direct text: only the element's own text nodes (not descendants)
@@ -1023,6 +1023,36 @@ function handlePressKey(message, sendResponse) {
     activeEl.dispatchEvent(new Event('change', { bubbles: true }));
 
     sendResponse({ success: true, newValue: currentVal });
+    return;
+  }
+
+  // Special handling: Home/End keys in textareas/inputs need programmatic cursor movement
+  // because synthetic keyboard events do NOT move the caret in most browsers.
+  if (activeEl && ['INPUT', 'TEXTAREA'].includes(activeEl.tagName) &&
+      typeof activeEl.setSelectionRange === 'function' &&
+      ['Home', 'End'].includes(key)) {
+    if (key === 'End') {
+      if (activeEl.tagName === 'TEXTAREA') {
+        // Move to end of current line
+        const val = activeEl.value;
+        const pos = activeEl.selectionStart;
+        const lineEnd = val.indexOf('\n', pos);
+        const newPos = lineEnd === -1 ? val.length : lineEnd;
+        activeEl.setSelectionRange(newPos, newPos);
+      } else {
+        activeEl.setSelectionRange(activeEl.value.length, activeEl.value.length);
+      }
+    } else { // Home
+      if (activeEl.tagName === 'TEXTAREA') {
+        const val = activeEl.value;
+        const pos = activeEl.selectionStart;
+        const lineStart = val.lastIndexOf('\n', pos - 1) + 1;
+        activeEl.setSelectionRange(lineStart, lineStart);
+      } else {
+        activeEl.setSelectionRange(0, 0);
+      }
+    }
+    sendResponse({ success: true });
     return;
   }
 
