@@ -223,7 +223,7 @@ async function parseAndExecuteActions(content, userMessage = '') {
   // STEP 5: EXECUTE DOM ACTIONS
   // ==========================================================================
   const domActions = actions.filter(a =>
-    ['click', 'scroll', 'type', 'pressKey', 'read', 'verify', 'wait'].includes(a.type)
+    ['click', 'scroll', 'type', 'pressKey', 'setslider', 'read', 'verify', 'wait'].includes(a.type)
   );
 
   let domActionExecuted = false;
@@ -512,6 +512,36 @@ async function executeDomAction(action) {
       } catch (err) {
         addSystemNotice(`\u26A0\uFE0F Key press failed: ${err.message}`);
         logAction('pressKey', action.key, 'failed');
+      }
+      break;
+
+    case 'setslider':
+      addSystemNotice(`\u{1F39A}\uFE0F Set slider: ${action.value}`);
+      logAction('setSlider', `value=${action.value}`, 'started');
+
+      try {
+        const sliderResult = await sendToBackground({
+          type: 'EXECUTE_IN_TAB',
+          tabId: state.currentTabId,
+          action: {
+            type: 'SET_SLIDER_VALUE',
+            index: action.index,
+            selector: action.selector,
+            value: action.value
+          }
+        });
+
+        if (sliderResult?.success) {
+          result.executed = true;
+          addSystemNotice(`\u2705 Slider set to ${sliderResult.newValue}`);
+          logAction('setSlider', `value=${sliderResult.newValue}`, 'success');
+        } else {
+          addSystemNotice(`\u26A0\uFE0F Slider failed: ${sliderResult?.error || 'unknown'}`);
+          logAction('setSlider', `value=${action.value}`, 'failed');
+        }
+      } catch (err) {
+        addSystemNotice(`\u26A0\uFE0F Slider failed: ${err.message}`);
+        logAction('setSlider', `value=${action.value}`, 'failed');
       }
       break;
 

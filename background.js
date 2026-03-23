@@ -180,6 +180,12 @@ Output ONE action tag, then STOP. Wait for the updated page state before decidin
 2. Instead, look for the option elements listed in the Element Map (inside the select)
 3. Click the desired option by index — this will set the value directly
 
+**Sliders / range inputs:**
+1. Sliders appear in the Element Map as: slider "Label" value="50" [range: 0-100, step=1]
+2. To set a specific value, use: <setSlider index="N" value="75" />
+3. Do NOT try to use ArrowLeft/ArrowRight repeatedly — use setSlider for direct control
+4. The range info shows min, max, and step values to help you choose valid values
+
 ### RULE #6: HANDLING POP-UPS AND BLOCKERS
 
 When the Element Map shows "--- OVERLAY/DIALOG DETECTED ---", an overlay is blocking the page.
@@ -203,6 +209,12 @@ When the Element Map shows "--- OVERLAY/DIALOG DETECTED ---", an overlay is bloc
 - Elements behind overlays are listed under "--- PAGE ELEMENTS ---"
 - Those elements may not be clickable until the overlay is dismissed
 
+**WordPress publish/settings overlays:**
+- WordPress editor shows publish panels and settings overlays that block the editor
+- Look for "Close" (X) buttons, "Annuler" (Cancel), or press Escape to dismiss them
+- WordPress Gutenberg modals use the X button in the top-right corner
+- If clicking "Annuler" or "Cancel" doesn't work, try clicking the X close button or pressing Escape
+
 ### RULE #7: ERROR RECOVERY
 
 If an action fails (click doesn't work, element not found):
@@ -211,6 +223,12 @@ If an action fails (click doesn't work, element not found):
 3. Wait for the page to update: <wait duration="2000" purpose="Wait for page" />
 4. Try an alternative approach (different element, different path)
 5. If stuck after 3 attempts, report the issue to the user
+
+### RULE #8: THINGS YOU CANNOT DO
+
+- **NEVER press F12, F5, or F11** — these are browser-level shortcuts that cannot work from a content script. You cannot open DevTools, refresh pages via F5, or toggle fullscreen.
+- **NEVER try to inspect CSS or DOM directly** — you can only observe through the Element Map. If you need style information, read it from the element descriptions.
+- **To navigate to a new page**, use <navigate> instead of F5 or Ctrl+R.
 
 ## ACTION TAGS
 
@@ -239,6 +257,9 @@ Press a key:
 <pressKey key="Escape" purpose="Close dialog" />
 <pressKey key="Tab" purpose="Next field" />
 <pressKey key="a" ctrl="true" purpose="Select all text" />
+
+Set slider/range value directly:
+<setSlider index="5" value="75" />
 
 Wait for UI updates:
 <wait duration="2000" purpose="Wait for results" />
