@@ -214,7 +214,7 @@ async function checkApiKey() {
 
   if (!state.apiKeySet) {
     elements.settingsPanel.classList.remove('hidden');
-    elements.apiKeyStatus.textContent = 'Please enter your Claude API key to get started.';
+    elements.apiKeyStatus.textContent = 'Veuillez entrer votre cl\u00e9 API Claude pour commencer.';
     elements.apiKeyStatus.className = 'status-text';
   }
 }
@@ -223,13 +223,13 @@ async function saveApiKey() {
   const apiKey = elements.apiKeyInput.value.trim();
 
   if (!apiKey) {
-    elements.apiKeyStatus.textContent = 'Please enter an API key.';
+    elements.apiKeyStatus.textContent = 'Veuillez entrer une cl\u00e9 API.';
     elements.apiKeyStatus.className = 'status-text error';
     return;
   }
 
   if (!apiKey.startsWith('sk-ant-')) {
-    elements.apiKeyStatus.textContent = 'Invalid API key format. Should start with sk-ant-';
+    elements.apiKeyStatus.textContent = 'Format de cl\u00e9 invalide. Doit commencer par sk-ant-';
     elements.apiKeyStatus.className = 'status-text error';
     return;
   }
@@ -238,7 +238,7 @@ async function saveApiKey() {
 
   if (response?.success) {
     state.apiKeySet = true;
-    elements.apiKeyStatus.textContent = 'API key saved successfully!';
+    elements.apiKeyStatus.textContent = 'Cl\u00e9 API enregistr\u00e9e avec succ\u00e8s !';
     elements.apiKeyStatus.className = 'status-text success';
     elements.apiKeyInput.value = '';
 
@@ -323,7 +323,7 @@ async function handleSendMessage() {
   if (urlMatch) {
     state.pendingNavigationUrl = urlMatch[0].replace(/[.,;:!?\)\]]+$/, '');
     console.log('[Sidepanel] URL CAPTURED:', state.pendingNavigationUrl);
-    addSystemNotice(`\u{1F50D} URL detected: ${state.pendingNavigationUrl}`);
+    addSystemNotice(`\u{1F50D} URL d\u00e9tect\u00e9e : ${state.pendingNavigationUrl}`);
   } else {
     state.pendingNavigationUrl = null;
   }
@@ -401,7 +401,7 @@ async function sendMessageToAssistant(message, isUserInitiated = true) {
         }).catch(() => {});
       }
 
-      addSystemNotice(`\u{1F4CB} Jira ticket context saved: ${pageContent.ticketInfo.key || 'ticket'}`);
+      addSystemNotice(`\u{1F4CB} Contexte Jira sauvegard\u00e9 : ${pageContent.ticketInfo.key || 'ticket'}`);
     }
 
     const pageContext = {
@@ -562,7 +562,7 @@ async function updateMissionContext() {
 }
 
 async function resetMission() {
-  if (confirm('Reset the current mission?')) {
+  if (confirm('R\u00e9initialiser la mission en cours ?')) {
     stopKeepAlive();
     await sendToBackground({ type: 'RESET_MISSION' }).catch(() => {});
 
@@ -593,15 +593,15 @@ async function resetMission() {
             <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
           </svg>
         </div>
-        <h2>Welcome to Manureva AI Assistant</h2>
-        <p>I'm your intelligent browser automation assistant. I can navigate and interact with any website:</p>
+        <h2>Bienvenue sur Manureva AI Assistant</h2>
+        <p>Je suis votre assistant intelligent d'automatisation web. Je peux naviguer et interagir avec n'importe quel site :</p>
         <ul>
-          <li>Fill forms, book flights, manage accounts on any site</li>
-          <li>Navigate complex web apps (SPAs, dashboards, admin panels)</li>
-          <li>Handle pop-ups, cookie banners, and multi-step workflows</li>
-          <li>Research, compare, and report findings across the web</li>
+          <li>Remplir des formulaires, g\u00e9rer des comptes sur n'importe quel site</li>
+          <li>Naviguer dans des applications web complexes (SPAs, tableaux de bord, admin)</li>
+          <li>G\u00e9rer les pop-ups, banni\u00e8res de cookies et workflows multi-\u00e9tapes</li>
+          <li>Rechercher, comparer et rapporter des informations sur le web</li>
         </ul>
-        <p class="hint">Tell me what you'd like to accomplish!</p>
+        <p class="hint">Dites-moi ce que vous souhaitez accomplir !</p>
       </div>
     `;
   }
@@ -622,7 +622,7 @@ function stopMission() {
   elements.stopBtn.classList.add('hidden');
   elements.sendBtn.disabled = false;
 
-  addSystemNotice('\u23F9\uFE0F Stopped by user');
+  addSystemNotice('\u23F9\uFE0F Arr\u00eat\u00e9 par l\u2019utilisateur');
 }
 
 // ============================================================================
@@ -630,7 +630,7 @@ function stopMission() {
 // ============================================================================
 let speechRecognition = null;
 
-function toggleVoiceInput() {
+async function toggleVoiceInput() {
   if (speechRecognition) {
     speechRecognition.stop();
     return;
@@ -638,7 +638,22 @@ function toggleVoiceInput() {
 
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SpeechRecognition) {
-    addSystemNotice('\u26A0\uFE0F Voice input not supported in this browser');
+    addSystemNotice('\u26A0\uFE0F Saisie vocale non support\u00e9e par ce navigateur');
+    return;
+  }
+
+  // Request microphone permission BEFORE starting recognition.
+  // Chrome extension side panels require an explicit getUserMedia() call
+  // to trigger the permission prompt; without it SpeechRecognition fails
+  // with "not-allowed".
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    // Stop the stream immediately — we only needed the permission grant.
+    // SpeechRecognition manages its own audio capture internally.
+    stream.getTracks().forEach(track => track.stop());
+  } catch (err) {
+    console.warn('[Sidepanel] Microphone permission denied:', err.message);
+    addSystemNotice('\u26A0\uFE0F Acc\u00e8s au microphone refus\u00e9. V\u00e9rifiez les permissions du navigateur.');
     return;
   }
 
@@ -668,7 +683,7 @@ function toggleVoiceInput() {
     elements.voiceBtn.classList.remove('active');
     speechRecognition = null;
     if (event.error !== 'aborted') {
-      addSystemNotice(`\u26A0\uFE0F Voice error: ${event.error}`);
+      addSystemNotice(`\u26A0\uFE0F Erreur vocale : ${event.error}`);
     }
   };
 
@@ -687,7 +702,7 @@ async function handleFileUpload(event) {
 
   const maxSize = 5 * 1024 * 1024; // 5MB
   if (file.size > maxSize) {
-    addSystemNotice(`\u26A0\uFE0F File too large (max 5MB): ${file.name}`);
+    addSystemNotice(`\u26A0\uFE0F Fichier trop volumineux (max 5 Mo) : ${file.name}`);
     return;
   }
 
@@ -699,8 +714,8 @@ async function handleFileUpload(event) {
         const base64 = reader.result;
         const userMsg = elements.userInput.value.trim();
         const message = userMsg
-          ? `${userMsg}\n\n[Uploaded image: ${file.name}]`
-          : `Please analyze this image: ${file.name}`;
+          ? `${userMsg}\n\n[Image jointe : ${file.name}]`
+          : `Veuillez analyser cette image : ${file.name}`;
 
         // Store the image data for the API call
         state.pendingImageData = {
@@ -713,7 +728,7 @@ async function handleFileUpload(event) {
         elements.userInput.value = message;
         elements.userInput.style.height = 'auto';
         elements.userInput.style.height = Math.min(elements.userInput.scrollHeight, 200) + 'px';
-        addSystemNotice(`\u{1F4CE} Image attached: ${file.name}`);
+        addSystemNotice(`\u{1F4CE} Image jointe : ${file.name}`);
       };
       reader.readAsDataURL(file);
     } else {
@@ -722,16 +737,16 @@ async function handleFileUpload(event) {
       const truncated = text.length > 10000 ? text.substring(0, 10000) + '\n...(truncated)' : text;
       const userMsg = elements.userInput.value.trim();
       const message = userMsg
-        ? `${userMsg}\n\n--- File: ${file.name} ---\n${truncated}`
-        : `Please analyze this file:\n\n--- File: ${file.name} ---\n${truncated}`;
+        ? `${userMsg}\n\n--- Fichier : ${file.name} ---\n${truncated}`
+        : `Veuillez analyser ce fichier :\n\n--- Fichier : ${file.name} ---\n${truncated}`;
 
       elements.userInput.value = message;
       elements.userInput.style.height = 'auto';
       elements.userInput.style.height = Math.min(elements.userInput.scrollHeight, 200) + 'px';
-      addSystemNotice(`\u{1F4CE} File attached: ${file.name}`);
+      addSystemNotice(`\u{1F4CE} Fichier joint : ${file.name}`);
     }
   } catch (err) {
-    addSystemNotice(`\u26A0\uFE0F Failed to read file: ${err.message}`);
+    addSystemNotice(`\u26A0\uFE0F \u00c9chec de lecture du fichier : ${err.message}`);
   }
 }
 

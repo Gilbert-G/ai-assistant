@@ -435,9 +435,22 @@ function detectActiveOverlay() {
   const openDialog = document.querySelector('dialog[open]');
   if (openDialog) return openDialog;
 
-  // 2. ARIA dialogs
-  const ariaDialog = document.querySelector('[role="dialog"]:not([aria-hidden="true"]), [role="alertdialog"]:not([aria-hidden="true"])');
-  if (ariaDialog && isVisible(ariaDialog)) return ariaDialog;
+  // 2. ARIA dialogs — but only if they are large enough to be a real blocking overlay.
+  //    Small ARIA dialogs (autocomplete popups, search suggestions, tooltips, "No suggestions"
+  //    dropdowns) should NOT be treated as blocking overlays.
+  const ariaDialogs = document.querySelectorAll('[role="dialog"]:not([aria-hidden="true"]), [role="alertdialog"]:not([aria-hidden="true"])');
+  for (const ariaDialog of ariaDialogs) {
+    if (!isVisible(ariaDialog)) continue;
+    const rect = ariaDialog.getBoundingClientRect();
+    // Must be at least 200px in both dimensions to qualify as a blocking dialog.
+    // Autocomplete/suggestion popups are typically narrow or short.
+    if (rect.width >= 200 && rect.height >= 150) {
+      // Extra check: must contain at least one interactive element (button, link, input)
+      if (ariaDialog.querySelector('button, a, [role="button"], input, [role="link"]')) {
+        return ariaDialog;
+      }
+    }
+  }
 
   // 3. Common modal/overlay CSS patterns (including WordPress-specific ones)
   const overlaySelectors = [

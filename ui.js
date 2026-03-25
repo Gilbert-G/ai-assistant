@@ -23,7 +23,7 @@ function createTodoContainer() {
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;">
         <path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
       </svg>
-      <span>Task Progress</span>
+      <span>Progression</span>
       <span class="todo-count"></span>
     </div>
     <div class="todo-items"></div>
@@ -296,13 +296,13 @@ function formatAssistantContent(content) {
         // Add copy button
         const copyBtn = document.createElement('button');
         copyBtn.className = 'code-copy-btn';
-        copyBtn.textContent = 'Copy';
+        copyBtn.textContent = 'Copier';
         copyBtn.addEventListener('click', () => {
           navigator.clipboard.writeText(codeText).then(() => {
-            copyBtn.textContent = 'Copied!';
+            copyBtn.textContent = 'Copi\u00e9 !';
             copyBtn.classList.add('copied');
             setTimeout(() => {
-              copyBtn.textContent = 'Copy';
+              copyBtn.textContent = 'Copier';
               copyBtn.classList.remove('copied');
             }, 2000);
           });
@@ -350,7 +350,7 @@ function formatAssistantContent(content) {
         copyBtn.textContent = 'Copied!';
         copyBtn.classList.add('copied');
         setTimeout(() => {
-          copyBtn.textContent = 'Copy';
+          copyBtn.textContent = 'Copier';
           copyBtn.classList.remove('copied');
         }, 2000);
       });
@@ -402,7 +402,7 @@ function showLoading() {
     <div class="message-content">
       <div class="loading-indicator">
         <div class="loading-dots"><span></span><span></span><span></span></div>
-        <span>Thinking...</span>
+        <span>R\u00e9flexion en cours...</span>
       </div>
     </div>
   `;
@@ -427,7 +427,7 @@ function addErrorMessage(error) {
     </div>
     <div class="message-content">
       <div class="message-bubble" style="border-color: var(--error);">
-        <strong>Error:</strong> ${escapeHtml(error)}
+        <strong>Erreur :</strong> ${escapeHtml(error)}
       </div>
     </div>
   `;
